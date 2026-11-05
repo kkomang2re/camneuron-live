@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 코드에서 만드는 고르는 칩 (줌 단계, 화질 프리셋). -->
+<TextView xmlns:android="http://schemas.android.com/apk/res/android"
+    style="@style/Chip" />

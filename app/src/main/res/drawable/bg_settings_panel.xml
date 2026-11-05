@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 방송 설정 창. 뒤의 미리보기가 비쳐 글자가 안 읽히지 않게 거의 불투명하게. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="#F0161618" />
+    <corners android:radius="14dp" />
+</shape>

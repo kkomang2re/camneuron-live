@@ -1,0 +1,19 @@
+# Gradle / Android Studio
+.gradle/
+.kotlin/
+build/
+*/build/
+.idea/
+*.iml
+local.properties
+
+# 서명 키 (출시 준비 때 만든다. 저장소에 넣지 않는다)
+keystore/
+keystore.properties
+*.jks
+*.keystore
+
+# 테스트 녹화
+*.flv
+*.mp4
+*.class

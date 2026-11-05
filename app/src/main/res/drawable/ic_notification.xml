@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 알림 아이콘: 앱 아이콘의 캠코더 모양을 흰색 실루엣으로 (시스템이 색을 입힌다). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M4,7 H13 A2,2 0 0 1 15,9 V15 A2,2 0 0 1 13,17 H4 A2,2 0 0 1 2,15 V9 A2,2 0 0 1 4,7 Z M5.5,12 A3,3 0 1 0 11.5,12 A3,3 0 1 0 5.5,12 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M16,10 L22,7 V17 L16,14 Z M7,12 A1.5,1.5 0 1 0 10,12 A1.5,1.5 0 1 0 7,12 Z" />
+</vector>

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 좁은 창(보정)에 넣는 작은 칩. -->
+<TextView xmlns:android="http://schemas.android.com/apk/res/android"
+    style="@style/ChipSmall"
+    android:layout_height="34dp"
+    android:minWidth="52dp"
+    android:textSize="12sp" />

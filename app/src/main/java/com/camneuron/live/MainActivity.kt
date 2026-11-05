@@ -1,0 +1,1226 @@
+package com.camneuron.live
+
+import android.Manifest
+import android.annotation.SuppressLint
+import android.app.Activity
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.graphics.Matrix
+import android.graphics.RectF
+import android.graphics.SurfaceTexture
+import android.graphics.Typeface
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
+import android.text.style.StyleSpan
+import android.view.inputmethod.EditorInfo
+import android.widget.ScrollView
+import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import android.window.OnBackInvokedDispatcher
+import android.util.Size
+import android.view.GestureDetector
+import android.view.MotionEvent
+import android.view.ScaleGestureDetector
+import android.view.Surface
+import android.view.TextureView
+import android.view.View
+import android.view.ViewGroup
+import android.view.WindowInsets
+import android.view.WindowManager
+import android.view.inputmethod.InputMethodManager
+import android.widget.EditText
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.SeekBar
+import android.widget.TextView
+import android.widget.Toast
+import com.camneuron.core.camera.CameraCaps
+import com.camneuron.core.camera.CameraControls
+import com.camneuron.core.camera.CameraEngine
+import com.camneuron.core.camera.FocusMode
+import com.camneuron.core.camera.NormPoint
+import com.camneuron.core.camera.WhiteBalance
+import com.camneuron.core.encode.BeautySettings
+import com.camneuron.core.encode.BeautyStore
+import com.camneuron.core.device.DeviceStatus
+import com.camneuron.core.overlay.OverlaySettings
+import com.camneuron.core.overlay.OverlayStore
+import com.camneuron.live.chzzk.ChzzkAccount
+import com.camneuron.live.chzzk.ChzzkApi
+import com.camneuron.live.chzzk.ChzzkCategory
+import com.camneuron.live.chzzk.ChzzkChat
+import com.camneuron.live.chzzk.ChzzkChatSession
+import com.camneuron.live.chzzk.ChzzkChatSettings
+import com.camneuron.live.chzzk.ChzzkCredentials
+import com.camneuron.live.chzzk.ChzzkDiagnose
+import com.camneuron.live.chzzk.ChzzkEvent
+import com.camneuron.live.chzzk.ChzzkPrefs
+import com.camneuron.live.chzzk.ChzzkTags
+import com.camneuron.live.chzzk.LoginActivity
+import com.camneuron.live.rtmp.RtmpUrl
+import com.camneuron.live.widget.WidgetCanvas
+import com.camneuron.live.widget.WidgetDefaults
+import com.camneuron.live.widget.WidgetFrame
+import com.camneuron.live.widget.WidgetHost
+import com.camneuron.live.widget.WidgetUrls
+import kotlin.math.min
+
+/**
+ * 한 화면: 카메라 미리보기, 오른쪽에 방송 설정·카메라 전환·방송 시작/종료 버튼과 마이크·가리기·플래시·손떨림 버튼,
+ * 아래에 줌 단계. 미리보기를 누르면 그곳에 초점·노출을 맞추고, 길게 누르면 자동 초점으로 돌아가며, 두 손가락으로 줌.
+ * 방송은 [LiveService]가 하므로 이 화면을 닫아도 계속된다.
+ */
+class MainActivity : Activity() {
+    private lateinit var engine: CameraEngine
+    private lateinit var preview: TextureView
+    private lateinit var status: TextView
+    private lateinit var liveButton: TextView
+    private lateinit var settingsButton: TextView
+    private lateinit var settingsPanel: View
+    private lateinit var serverInput: EditText
+    private lateinit var keyInput: EditText
+    private lateinit var micButton: TextView
+    private lateinit var coverButton: TextView
+    private lateinit var torchButton: TextView
+    private lateinit var stabilizationButton: TextView
+    private lateinit var zoomBar: LinearLayout
+    private lateinit var focusRing: View
+    private lateinit var coverBanner: View
+    private lateinit var presetRow: LinearLayout
+    private lateinit var bitrateLabel: TextView
+    private lateinit var bitrateSeek: SeekBar
+    private lateinit var keyFrame1: TextView
+    private lateinit var keyFrame2: TextView
+    private lateinit var widgetLayer: FrameLayout
+    private lateinit var widgetFrames: List<WidgetFrame>
+    private lateinit var widgetDone: View
+    private lateinit var chatUrlInput: EditText
+    private lateinit var alertUrlInput: EditText
+    private lateinit var chatStreamChip: TextView
+    private lateinit var alertStreamChip: TextView
+
+    /** 설정 화면에서 고치는 중인 "방송 화면에 넣기" (채팅창, 후원 알림). */
+    private var draftChatStream = true
+    private var draftAlertStream = true
+    private var editingWidgets = false
+
+    // 치지직 계정·방송 정보 (설정 창)
+    private lateinit var chzzkStatus: TextView
+    private lateinit var clientIdInput: EditText
+    private lateinit var clientSecretInput: EditText
+    private lateinit var redirectInput: EditText
+    private lateinit var showSecretButton: TextView
+    private lateinit var secretSaved: TextView
+    private var secretVisible = false
+    private lateinit var liveInfoSection: View
+    private lateinit var titleInput: EditText
+    private lateinit var categoryCurrent: TextView
+    private lateinit var categorySearchInput: EditText
+    private lateinit var categoryResults: LinearLayout
+    private lateinit var tagsInput: EditText
+
+    /** 고른 카테고리. null이면 바꾸지 않는다, [ChzzkApi.NO_CATEGORY]면 지운다. */
+    private var draftCategory: ChzzkCategory? = null
+
+    // 채팅 창
+    private lateinit var chatButton: TextView
+    private lateinit var chatPanel: View
+    private lateinit var chatStatus: TextView
+    private lateinit var chatLines: LinearLayout
+    private lateinit var chatScroll: ScrollView
+    private lateinit var chatInput: EditText
+    private lateinit var slowChip: TextView
+    private lateinit var followerChip: TextView
+    private lateinit var readAloudChip: TextView
+    private var chatSettings: ChzzkChatSettings? = null
+    private var shownTotal = -1L
+    private val chatListener = ChzzkChat.Listener { renderChat() }
+
+    // 보정 창
+    private lateinit var adjustButton: TextView
+    private lateinit var adjustPanel: View
+    private lateinit var smoothRow: LinearLayout
+    private lateinit var brightRow: LinearLayout
+    private lateinit var evLabel: TextView
+    private lateinit var evSeek: SeekBar
+    private lateinit var wbChips: LinearLayout
+    private lateinit var lockChip: TextView
+
+    private val main = Handler(Looper.getMainLooper())
+    private var permissionsRequested = false
+
+    /** 설정 화면에서 고치는 중인 화질. 저장하면 [LivePrefs]에 쓴다. */
+    private var draftQuality = LiveQuality()
+    private var zoomSteps: List<Float> = emptyList()
+    private var pinchZoom = 1f
+
+    private val stateListener: (LiveState.Status) -> Unit = { render(it) }
+    private val hideFocusRing = Runnable { focusRing.visibility = View.GONE }
+
+    private val widgetListener = WidgetHost.Listener { index, frame -> widgetFrames[index].setBitmap(frame?.bitmap) }
+    private val overlayListener: (OverlaySettings) -> Unit = { runOnUiThread { renderWidgets() } }
+
+    private val engineListener = object : CameraEngine.Listener {
+        override fun onPreviewSizeChanged(size: Size) = runOnUiThread { applyPreviewTransform() }
+
+        override fun onCapsChanged(caps: CameraCaps) = runOnUiThread {
+            rebuildZoomBar(caps)
+            renderCameraControls()
+            rebuildWhiteBalanceChips(caps)
+            renderAdjust()
+        }
+
+        override fun onControlsChanged(controls: CameraControls) = runOnUiThread {
+            renderCameraControls()
+            renderAdjust()
+        }
+
+        override fun onError(message: String?) = runOnUiThread {
+            Toast.makeText(this@MainActivity, message ?: "camera error", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /** 방송 시간과 배터리를 1초마다 다시 그린다. */
+    private val ticker = object : Runnable {
+        override fun run() {
+            render(LiveState.current)
+            main.postDelayed(this, 1000)
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        engine = CameraEngine.get(this)
+
+        preview = findViewById(R.id.preview)
+        status = findViewById(R.id.status)
+        liveButton = findViewById(R.id.btn_live)
+        settingsButton = findViewById(R.id.btn_settings)
+        settingsPanel = findViewById(R.id.settings_panel)
+        serverInput = findViewById(R.id.input_server)
+        keyInput = findViewById(R.id.input_key)
+        micButton = findViewById(R.id.btn_mic)
+        coverButton = findViewById(R.id.btn_cover)
+        torchButton = findViewById(R.id.btn_torch)
+        stabilizationButton = findViewById(R.id.btn_stabilization)
+        zoomBar = findViewById(R.id.zoom_bar)
+        focusRing = findViewById(R.id.focus_ring)
+        coverBanner = findViewById(R.id.cover_banner)
+        presetRow = findViewById(R.id.quality_presets)
+        bitrateLabel = findViewById(R.id.label_bitrate)
+        bitrateSeek = findViewById(R.id.seek_bitrate)
+        keyFrame1 = findViewById(R.id.key_frame_1)
+        keyFrame2 = findViewById(R.id.key_frame_2)
+        widgetLayer = findViewById(R.id.widget_layer)
+        widgetDone = findViewById(R.id.btn_widget_done)
+        chatUrlInput = findViewById(R.id.input_chat_url)
+        alertUrlInput = findViewById(R.id.input_alert_url)
+        chatStreamChip = findViewById(R.id.chip_chat_stream)
+        alertStreamChip = findViewById(R.id.chip_alert_stream)
+        OverlayStore.init(this)
+        chzzkStatus = findViewById(R.id.chzzk_status)
+        clientIdInput = findViewById(R.id.input_client_id)
+        clientSecretInput = findViewById(R.id.input_client_secret)
+        redirectInput = findViewById(R.id.input_redirect)
+        showSecretButton = findViewById(R.id.btn_show_secret)
+        secretSaved = findViewById(R.id.secret_saved)
+        liveInfoSection = findViewById(R.id.live_info_section)
+        titleInput = findViewById(R.id.input_title)
+        categoryCurrent = findViewById(R.id.category_current)
+        categorySearchInput = findViewById(R.id.input_category_search)
+        categoryResults = findViewById(R.id.category_results)
+        tagsInput = findViewById(R.id.input_tags)
+        chatButton = findViewById(R.id.btn_chat)
+        chatPanel = findViewById(R.id.chat_panel)
+        chatStatus = findViewById(R.id.chat_status)
+        chatLines = findViewById(R.id.chat_lines)
+        chatScroll = findViewById(R.id.chat_scroll)
+        chatInput = findViewById(R.id.chat_input)
+        slowChip = findViewById(R.id.chip_slow)
+        followerChip = findViewById(R.id.chip_follower)
+        readAloudChip = findViewById(R.id.chip_read_aloud)
+        adjustButton = findViewById(R.id.btn_adjust)
+        adjustPanel = findViewById(R.id.adjust_panel)
+        smoothRow = findViewById(R.id.row_beauty_smooth)
+        brightRow = findViewById(R.id.row_beauty_bright)
+        evLabel = findViewById(R.id.label_ev)
+        evSeek = findViewById(R.id.seek_ev)
+        wbChips = findViewById(R.id.wb_chips)
+        lockChip = findViewById(R.id.chip_lock)
+        BeautyStore.init(this)
+
+        preview.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(texture: SurfaceTexture, width: Int, height: Int) {
+                if (hasCameraPermission()) engine.setPreviewTexture(texture)
+                applyPreviewTransform()
+            }
+
+            override fun onSurfaceTextureSizeChanged(texture: SurfaceTexture, width: Int, height: Int) =
+                applyPreviewTransform()
+
+            override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean {
+                // 카메라가 이 SurfaceTexture를 놓은 뒤에 해제한다.
+                engine.setPreviewTexture(null) { texture.release() }
+                return false
+            }
+
+            override fun onSurfaceTextureUpdated(texture: SurfaceTexture) = Unit
+        }
+
+        liveButton.setOnClickListener { toggleLive() }
+        settingsButton.setOnClickListener { showSettings(true) }
+        findViewById<View>(R.id.btn_flip).setOnClickListener { engine.requestFacing(!engine.controls.front) }
+        findViewById<View>(R.id.btn_save).setOnClickListener { saveSettings() }
+        findViewById<View>(R.id.btn_cancel).setOnClickListener { showSettings(false) }
+        setUpQuickButtons()
+        setUpQualityControls()
+        setUpWidgets()
+        setUpChzzk()
+        setUpChat()
+        setUpAdjust()
+        setUpGestures()
+        avoidSystemBars()
+        // Android 13부터는 뒤로 가기가 이 콜백으로 온다 (이 앱은 API 36이 대상이라 onBackPressed가 불리지 않는다).
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT) { handleBack() }
+        }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        handleBack()
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // 뒤로 가기, 종료
+
+    /** 열린 창이 있으면 그것부터 닫고, 없으면 종료할지 묻는다. */
+    private fun handleBack() {
+        when {
+            settingsPanel.visibility == View.VISIBLE -> showSettings(false)
+            editingWidgets -> setEditingWidgets(false)
+            chatPanel.visibility == View.VISIBLE || adjustPanel.visibility == View.VISIBLE -> {
+                chatPanel.visibility = View.GONE
+                adjustPanel.visibility = View.GONE
+                render(LiveState.current)
+            }
+            else -> confirmExit()
+        }
+    }
+
+    private fun confirmExit() {
+        val live = LiveState.current.phase != LiveState.Phase.IDLE
+        val dialog = android.app.AlertDialog.Builder(this)
+        if (live) {
+            dialog.setTitle(R.string.exit_live_title)
+                .setMessage(R.string.exit_live_message)
+                .setPositiveButton(R.string.exit_live_stop) { _, _ -> exitApp() }
+                .setNeutralButton(R.string.exit_background) { _, _ -> moveTaskToBack(true) }
+                .setNegativeButton(R.string.btn_cancel, null)
+        } else {
+            dialog.setTitle(R.string.exit_title)
+                .setMessage(R.string.exit_message)
+                .setPositiveButton(R.string.exit_confirm) { _, _ -> exitApp() }
+                .setNegativeButton(R.string.btn_cancel, null)
+        }
+        dialog.show()
+    }
+
+    /**
+     * 완전히 끈다: 방송 중이면 서버에 방송 종료를 알리고, 화면을 닫고 최근 앱 목록에서도 빼고, 앱 프로세스를 끝낸다
+     * (카메라·채팅·위젯 연결이 남지 않게). 방송 세션이 끝날 때까지(많아야 [EXIT_WAIT_MS]) 기다린 뒤 프로세스를 끝낸다.
+     */
+    private fun exitApp() {
+        if (LiveState.current.phase != LiveState.Phase.IDLE) LiveService.stop(this)
+        LiveControls.setCovered(false)
+        finishAndRemoveTask()
+        val deadline = SystemClock.uptimeMillis() + EXIT_WAIT_MS
+        val handler = Handler(Looper.getMainLooper())
+        handler.postDelayed(object : Runnable {
+            override fun run() {
+                if (LiveState.current.phase == LiveState.Phase.IDLE || SystemClock.uptimeMillis() > deadline) {
+                    android.os.Process.killProcess(android.os.Process.myPid())
+                } else {
+                    handler.postDelayed(this, 200)
+                }
+            }
+        }, EXIT_SETTLE_MS)
+    }
+
+    /**
+     * Android 15부터 앱이 화면 끝까지 그려져 가로 화면에서 내비게이션 바가 버튼을 가린다.
+     * 미리보기는 끝까지 두고, 버튼·줌 단계·상태 글자만 시스템 바·카메라 구멍을 피해 안쪽으로 민다.
+     */
+    private fun avoidSystemBars() {
+        val controls = findViewById<View>(R.id.controls)
+        val statusMargins = status.layoutParams as ViewGroup.MarginLayoutParams
+        val baseStart = statusMargins.leftMargin
+        val baseTop = statusMargins.topMargin
+        val zoomMargins = zoomBar.layoutParams as ViewGroup.MarginLayoutParams
+        val baseZoomBottom = zoomMargins.bottomMargin
+        val bannerMargins = coverBanner.layoutParams as ViewGroup.MarginLayoutParams
+        val baseBannerBottom = bannerMargins.bottomMargin
+        window.decorView.setOnApplyWindowInsetsListener { view, insets ->
+            val left: Int
+            val top: Int
+            val right: Int
+            val bottom: Int
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+                left = bars.left
+                top = bars.top
+                right = bars.right
+                bottom = bars.bottom
+            } else {
+                @Suppress("DEPRECATION")
+                left = insets.systemWindowInsetLeft
+                @Suppress("DEPRECATION")
+                top = insets.systemWindowInsetTop
+                @Suppress("DEPRECATION")
+                right = insets.systemWindowInsetRight
+                @Suppress("DEPRECATION")
+                bottom = insets.systemWindowInsetBottom
+            }
+            controls.setPadding(controls.paddingLeft, top, right, bottom)
+            statusMargins.leftMargin = baseStart + left
+            statusMargins.topMargin = baseTop + top
+            status.layoutParams = statusMargins
+            zoomMargins.bottomMargin = baseZoomBottom + bottom
+            zoomBar.layoutParams = zoomMargins
+            bannerMargins.bottomMargin = baseBannerBottom + bottom
+            coverBanner.layoutParams = bannerMargins
+            view.onApplyWindowInsets(insets)
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        LiveState.addListener(stateListener)
+        engine.addListener(engineListener)
+        main.post(ticker)
+        val missing = requiredPermissions().filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (missing.isNotEmpty() && !permissionsRequested) {
+            permissionsRequested = true
+            requestPermissions(missing.toTypedArray(), REQUEST_PERMISSIONS)
+        }
+        if (preview.isAvailable && hasCameraPermission()) preview.surfaceTexture?.let { engine.setPreviewTexture(it) }
+        engine.caps?.let { rebuildZoomBar(it) }
+        renderCameraControls()
+        WidgetHost.acquire(this)
+        WidgetHost.addListener(widgetListener)
+        OverlayStore.addListener(overlayListener)
+        for (i in 0 until WidgetHost.COUNT) widgetFrames[i].setBitmap(WidgetHost.latest(i)?.bitmap)
+        renderWidgets()
+        ChzzkChat.acquire(this)
+        ChzzkChat.addListener(chatListener)
+        shownTotal = -1 // 채팅 줄을 처음부터 다시 그린다
+        renderChat()
+        // 이미 열려 있으면 다시 채우지 않는다 (다른 앱에서 값을 복사해 오는 동안 입력한 것이 지워지지 않게).
+        if (LivePrefs.streamKey(this).isEmpty() && LiveState.current.phase == LiveState.Phase.IDLE &&
+            settingsPanel.visibility != View.VISIBLE
+        ) {
+            showSettings(true)
+        }
+    }
+
+    override fun onStop() {
+        // 방송하지 않을 때는 카메라를 닫는다. 방송 중이면 엔진이 인코더에 계속 그린다.
+        engine.setPreviewTexture(null)
+        engine.removeListener(engineListener)
+        LiveState.removeListener(stateListener)
+        OverlayStore.removeListener(overlayListener)
+        WidgetHost.removeListener(widgetListener)
+        WidgetHost.release()
+        ChzzkChat.removeListener(chatListener)
+        ChzzkChat.release()
+        setEditingWidgets(false)
+        main.removeCallbacks(ticker)
+        super.onStop()
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_LOGIN) return
+        if (resultCode == RESULT_OK) {
+            ChzzkChat.restart()
+            // 로그인하면서 받은 스트림 키를 칸에 보인다.
+            if (settingsPanel.visibility == View.VISIBLE) keyInput.setText(LivePrefs.streamKey(this))
+        }
+        renderChzzkSettings()
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != REQUEST_PERMISSIONS) return
+        if (hasCameraPermission() && preview.isAvailable) preview.surfaceTexture?.let { engine.setPreviewTexture(it) }
+    }
+
+    private fun toggleLive() {
+        if (LiveState.current.phase != LiveState.Phase.IDLE) {
+            LiveService.stop(this)
+            return
+        }
+        if (!hasCameraPermission()) {
+            Toast.makeText(this, R.string.error_camera_permission, Toast.LENGTH_SHORT).show()
+            requestPermissions(requiredPermissions(), REQUEST_PERMISSIONS)
+            return
+        }
+        if (RtmpUrl.parse(LivePrefs.serverUrl(this)) == null || LivePrefs.streamKey(this).isEmpty()) {
+            showSettings(true)
+            return
+        }
+        LiveService.start(this)
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // 방송 중 조작
+
+    private fun setUpQuickButtons() {
+        micButton.setOnClickListener {
+            LiveControls.setMicMuted(!LiveControls.micMuted)
+            render(LiveState.current)
+        }
+        coverButton.setOnClickListener {
+            LiveControls.setCovered(!LiveControls.covered)
+            render(LiveState.current)
+        }
+        torchButton.setOnClickListener { engine.update { it.copy(torch = !it.torch) } }
+        stabilizationButton.setOnClickListener { engine.update { it.copy(stabilization = !it.stabilization) } }
+    }
+
+    private fun renderCameraControls() {
+        val caps = engine.caps
+        val controls = engine.controls
+        torchButton.isEnabled = caps?.torch == true
+        torchButton.isActivated = controls.torch
+        stabilizationButton.isEnabled = caps?.stabilization == true
+        stabilizationButton.isActivated = controls.stabilization
+        val selected = ZoomSteps.selected(zoomSteps, controls.zoom)
+        for (i in 0 until zoomBar.childCount) {
+            zoomBar.getChildAt(i).isActivated = zoomSteps.getOrNull(i) == selected
+        }
+    }
+
+    private fun rebuildZoomBar(caps: CameraCaps) {
+        val steps = ZoomSteps.steps(caps.zoomMin, caps.zoomMax)
+        if (steps == zoomSteps && zoomBar.childCount == steps.size) return
+        zoomSteps = steps
+        zoomBar.removeAllViews()
+        for (step in steps) {
+            zoomBar.addView(chip(zoomBar, ZoomSteps.label(step)) { engine.update { it.copy(zoom = step) } })
+        }
+    }
+
+    /** 고르는 칩 하나 (줌 단계, 화질 프리셋). */
+    private fun chip(parent: ViewGroup, text: String, layout: Int = R.layout.chip, onClick: () -> Unit): TextView =
+        (layoutInflater.inflate(layout, parent, false) as TextView).apply {
+            this.text = text
+            setOnClickListener { onClick() }
+        }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun setUpGestures() {
+        val scale = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
+                pinchZoom = engine.controls.zoom
+                return true
+            }
+
+            override fun onScale(detector: ScaleGestureDetector): Boolean {
+                val caps = engine.caps ?: return false
+                pinchZoom = (pinchZoom * detector.scaleFactor).coerceIn(caps.zoomMin, caps.zoomMax)
+                val zoom = pinchZoom
+                engine.update { it.copy(zoom = zoom) }
+                return true
+            }
+        })
+        val gestures = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onSingleTapUp(e: MotionEvent): Boolean {
+                if (settingsPanel.visibility == View.VISIBLE || editingWidgets) return true
+                focusAtView(e.x, e.y)
+                return true
+            }
+
+            override fun onLongPress(e: MotionEvent) {
+                engine.update { it.copy(focusMode = FocusMode.CONTINUOUS, focusPoint = null, aeLock = false, awbLock = false) }
+                Toast.makeText(this@MainActivity, R.string.toast_focus_auto, Toast.LENGTH_SHORT).show()
+            }
+        })
+        preview.setOnTouchListener { _, event ->
+            scale.onTouchEvent(event)
+            if (!scale.isInProgress) gestures.onTouchEvent(event)
+            true
+        }
+    }
+
+    /** 미리보기에서 누른 점을 송출 영상 좌표(0~1)로 바꿔 초점·노출을 맞춘다. */
+    private fun focusAtView(x: Float, y: Float) {
+        val image = displayedImageRect() ?: return
+        if (!image.contains(x, y)) return
+        var nx = (x - image.left) / image.width()
+        val ny = (y - image.top) / image.height()
+        // 전면 카메라 미리보기는 거울처럼 좌우가 뒤집혀 보이지만 송출 영상은 뒤집히지 않는다.
+        if (engine.controls.front) nx = 1f - nx
+        engine.focusAt(NormPoint(nx, ny))
+
+        val size = focusRing.layoutParams.width
+        focusRing.translationX = x - size / 2f
+        focusRing.translationY = y - size / 2f
+        focusRing.visibility = View.VISIBLE
+        main.removeCallbacks(hideFocusRing)
+        main.postDelayed(hideFocusRing, FOCUS_RING_MS)
+    }
+
+    /** 미리보기 안에서 영상이 그려진 곳. [applyPreviewTransform]처럼 화면비를 지켜 가운데에 맞춘다. */
+    private fun displayedImageRect(): RectF? {
+        val size = engine.previewSize ?: return null
+        val viewWidth = preview.width.toFloat()
+        val viewHeight = preview.height.toFloat()
+        if (viewWidth == 0f || viewHeight == 0f) return null
+        val aspect = maxOf(size.width, size.height).toFloat() / minOf(size.width, size.height)
+        val w: Float
+        val h: Float
+        if (viewWidth / viewHeight > aspect) {
+            h = viewHeight
+            w = viewHeight * aspect
+        } else {
+            w = viewWidth
+            h = viewWidth / aspect
+        }
+        val left = (viewWidth - w) / 2
+        val top = (viewHeight - h) / 2
+        return RectF(left, top, left + w, top + h)
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // 위젯 (채팅창, 후원 알림)
+
+    private fun setUpWidgets() {
+        val chat = WidgetFrame(this, getString(R.string.widget_chat)) { x, y, w, h ->
+            OverlayStore.update { it.copy(chat = it.chat.copy(x = x, y = y, w = w, h = h)) }
+        }
+        val alert = WidgetFrame(this, getString(R.string.widget_alert)) { x, y, w, h ->
+            OverlayStore.update { it.copy(alert = it.alert.copy(x = x, y = y, w = w, h = h)) }
+        }
+        widgetFrames = listOf(chat, alert) // WidgetHost.CHAT, WidgetHost.ALERT 순서
+        widgetFrames.forEach { widgetLayer.addView(it) }
+        chatStreamChip.setOnClickListener {
+            draftChatStream = !draftChatStream
+            renderWidgetDraft()
+        }
+        alertStreamChip.setOnClickListener {
+            draftAlertStream = !draftAlertStream
+            renderWidgetDraft()
+        }
+        findViewById<View>(R.id.btn_widget_edit).setOnClickListener {
+            if (saveSettings()) setEditingWidgets(true)
+        }
+        widgetDone.setOnClickListener { setEditingWidgets(false) }
+    }
+
+    private fun setEditingWidgets(editing: Boolean) {
+        editingWidgets = editing
+        widgetFrames.forEach { it.editable = editing }
+        widgetDone.visibility = if (editing) View.VISIBLE else View.GONE
+        if (editing) Toast.makeText(this, R.string.toast_widget_edit, Toast.LENGTH_LONG).show()
+    }
+
+    /** 위젯 자리를 미리보기 속 영상 위치에 맞춘다. */
+    private fun renderWidgets() {
+        val image = displayedImageRect() ?: RectF()
+        val settings = OverlayStore.current
+        listOf(settings.chat, settings.alert).forEachIndexed { i, item ->
+            val label = getString(if (WidgetCanvas.streamed(item)) R.string.widget_streamed else R.string.widget_phone_only)
+            widgetFrames[i].bind(item, image, label)
+        }
+    }
+
+    private fun renderWidgetDraft() {
+        chatStreamChip.isActivated = draftChatStream
+        alertStreamChip.isActivated = draftAlertStream
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // 치지직 계정 연결, 방송 정보
+
+    private fun setUpChzzk() {
+        showSecretButton.setOnClickListener { setSecretVisible(!secretVisible) }
+        findViewById<View>(R.id.btn_chzzk_login).setOnClickListener {
+            if (clientIdInput.text.isBlank() || clientSecretInput.text.isBlank()) {
+                Toast.makeText(this, R.string.chzzk_need_app, Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            saveChzzkApp()
+            @Suppress("DEPRECATION")
+            startActivityForResult(Intent(this, LoginActivity::class.java), REQUEST_LOGIN)
+        }
+        findViewById<View>(R.id.btn_chzzk_logout).setOnClickListener {
+            ChzzkAccount.logout(this) {
+                Toast.makeText(this, R.string.chzzk_logged_out, Toast.LENGTH_SHORT).show()
+                ChzzkChat.restart()
+                renderChzzkSettings()
+            }
+        }
+        // 로그인 없이 Client ID/Secret만으로 부르는 API(카테고리 검색)로 앱 정보가 맞는지 따로 확인한다.
+        findViewById<View>(R.id.btn_chzzk_check).setOnClickListener {
+            if (clientIdInput.text.isBlank() || clientSecretInput.text.isBlank()) {
+                Toast.makeText(this, R.string.chzzk_need_app, Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            saveChzzkApp()
+            val id = ChzzkPrefs.clientId(this)
+            val secret = ChzzkPrefs.clientSecret(this)
+            // 같은 ID·Secret으로 요청 모양만 바꿔 보낸다. 결과는 대화상자와 로그(ChzzkDiagnose)에 남는다.
+            ChzzkAccount.run(this, { ChzzkDiagnose.run(id, secret) }) { result ->
+                val lines = result.getOrElse { listOf(it.message ?: "오류") }
+                android.app.AlertDialog.Builder(this)
+                    .setTitle(R.string.btn_chzzk_check)
+                    .setMessage(lines.joinToString("\n"))
+                    .setPositiveButton(android.R.string.ok, null)
+                    .show()
+            }
+        }
+        findViewById<View>(R.id.btn_live_info_load).setOnClickListener { loadLiveInfo() }
+        findViewById<View>(R.id.btn_live_info_save).setOnClickListener { saveLiveInfo() }
+        findViewById<View>(R.id.btn_category_search).setOnClickListener { searchCategories() }
+        categorySearchInput.setOnEditorActionListener { _, action, _ ->
+            if (action == EditorInfo.IME_ACTION_SEARCH) searchCategories()
+            action == EditorInfo.IME_ACTION_SEARCH
+        }
+    }
+
+    /** Client ID/Secret/리디렉션 주소 저장. 바뀌었으면 이전 로그인은 지워진다 ([ChzzkPrefs.saveApp]). */
+    private fun saveChzzkApp() {
+        val id = clientIdInput.text.toString().trim()
+        val secret = clientSecretInput.text.toString().trim()
+        val redirect = redirectInput.text.toString().trim()
+        val before = ChzzkPrefs.loggedIn(this)
+        ChzzkPrefs.saveApp(this, id, secret, redirect)
+        if (before && !ChzzkPrefs.loggedIn(this)) ChzzkChat.restart()
+        clientIdInput.setText(ChzzkPrefs.clientId(this))
+        clientSecretInput.setText(ChzzkPrefs.clientSecret(this))
+        renderChzzkSettings()
+    }
+
+    /** Secret 칸을 글자로 보이거나 점으로 가린다. */
+    private fun setSecretVisible(visible: Boolean) {
+        secretVisible = visible
+        val selection = clientSecretInput.selectionEnd
+        clientSecretInput.inputType = android.text.InputType.TYPE_CLASS_TEXT or
+            if (visible) android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD else android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+        clientSecretInput.setSelection(selection.coerceIn(0, clientSecretInput.text.length))
+        showSecretButton.setText(if (visible) R.string.btn_hide_secret else R.string.btn_show_secret)
+    }
+
+    private fun renderChzzkSettings() {
+        val saved = ChzzkCredentials.summary(ChzzkPrefs.clientSecret(this))
+        secretSaved.text = saved?.let { getString(R.string.secret_saved, it) } ?: getString(R.string.secret_saved_none)
+        val loggedIn = ChzzkPrefs.loggedIn(this)
+        val name = ChzzkPrefs.channelName(this).ifBlank { getString(R.string.chzzk_unknown_channel) }
+        chzzkStatus.text = if (loggedIn) getString(R.string.chzzk_status_on, name) else getString(R.string.chzzk_status_off)
+        liveInfoSection.visibility = if (loggedIn) View.VISIBLE else View.GONE
+        renderCategory()
+    }
+
+    private fun renderCategory() {
+        val label = when (val c = draftCategory) {
+            null -> getString(R.string.category_unchanged)
+            ChzzkApi.NO_CATEGORY -> getString(R.string.category_none)
+            else -> c.name
+        }
+        categoryCurrent.text = getString(R.string.category_current, label)
+    }
+
+    private fun loadLiveInfo() {
+        ChzzkAccount.run(this, { it.liveSetting() }) { result ->
+            result.onSuccess { setting ->
+                titleInput.setText(setting.title)
+                tagsInput.setText(ChzzkTags.format(setting.tags))
+                draftCategory = setting.category ?: ChzzkApi.NO_CATEGORY
+                renderCategory()
+                Toast.makeText(this, R.string.toast_live_info_loaded, Toast.LENGTH_SHORT).show()
+            }.onFailure { showError(it) }
+        }
+    }
+
+    private fun searchCategories() {
+        val query = categorySearchInput.text.toString().trim()
+        if (query.isEmpty()) return
+        ChzzkAccount.run(this, { it.searchCategories(query, MAX_CATEGORY_RESULTS) }) { result ->
+            result.onSuccess { found ->
+                categoryResults.removeAllViews()
+                categoryResults.addView(chip(categoryResults, getString(R.string.chip_no_category)) {
+                    draftCategory = ChzzkApi.NO_CATEGORY
+                    renderCategory()
+                })
+                found.forEach { category ->
+                    categoryResults.addView(chip(categoryResults, category.name) {
+                        draftCategory = category
+                        renderCategory()
+                    })
+                }
+                if (found.isEmpty()) Toast.makeText(this, R.string.toast_no_categories, Toast.LENGTH_SHORT).show()
+            }.onFailure { showError(it) }
+        }
+    }
+
+    private fun saveLiveInfo() {
+        val title = titleInput.text.toString().trim()
+        if (title.isEmpty()) {
+            titleInput.error = getString(R.string.error_title_empty)
+            return
+        }
+        val category = draftCategory
+        val tags = ChzzkTags.parse(tagsInput.text.toString())
+        tagsInput.setText(ChzzkTags.format(tags))
+        ChzzkAccount.run(this, { it.updateLiveSetting(title, category, tags) }) { result ->
+            result.onSuccess { Toast.makeText(this, R.string.toast_live_info_saved, Toast.LENGTH_SHORT).show() }
+                .onFailure { showError(it) }
+        }
+    }
+
+    private fun showError(error: Throwable) {
+        Toast.makeText(this, error.message ?: error.javaClass.simpleName, Toast.LENGTH_LONG).show()
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // 채팅 창
+
+    // ---------------------------------------------------------------------------------------------
+    // 보정 (뷰티·노출·화이트밸런스). 방송 중에도 바로 바뀐다.
+
+    private fun setUpAdjust() {
+        adjustButton.setOnClickListener {
+            val show = adjustPanel.visibility != View.VISIBLE
+            adjustPanel.visibility = if (show) View.VISIBLE else View.GONE
+            if (show) {
+                chatPanel.visibility = View.GONE
+                engine.caps?.let { rebuildWhiteBalanceChips(it) }
+                renderAdjust()
+            }
+            render(LiveState.current)
+        }
+        // 캠뉴런과 같은 칩과 단계. 값은 core의 BeautyStore에 저장되고 방송 중이면 바로 적용된다.
+        for ((labelRes, level) in BEAUTY_LEVELS) {
+            smoothRow.addView(chip(smoothRow, getString(labelRes), R.layout.chip_small) {
+                BeautyStore.update { it.copy(smooth = level) }
+                renderAdjust()
+            }.apply { tag = level })
+            brightRow.addView(chip(brightRow, getString(labelRes), R.layout.chip_small) {
+                BeautyStore.update { it.copy(bright = level) }
+                renderAdjust()
+            }.apply { tag = level })
+        }
+        evSeek.setOnSeekBarChangeListener(seekListener { progress ->
+            val caps = engine.caps ?: return@seekListener
+            val ev = caps.evMin + progress * caps.evStep
+            engine.update { it.copy(ev = ev) }
+        })
+        lockChip.setOnClickListener {
+            val lock = !engine.controls.aeLock
+            engine.update { it.copy(aeLock = lock, awbLock = lock) }
+        }
+        findViewById<View>(R.id.btn_adjust_reset).setOnClickListener {
+            BeautyStore.update { BeautySettings.OFF }
+            engine.update { it.copy(ev = 0f, whiteBalance = WhiteBalance.AUTO, aeLock = false, awbLock = false) }
+            renderAdjust()
+        }
+    }
+
+    /** 손으로 움직일 때만 알린다 (그리기 때문에 바뀐 것은 무시). */
+    private fun seekListener(onChange: (Int) -> Unit) = object : SeekBar.OnSeekBarChangeListener {
+        override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) {
+            if (fromUser) onChange(progress)
+        }
+
+        override fun onStartTrackingTouch(seekBar: SeekBar) = Unit
+        override fun onStopTrackingTouch(seekBar: SeekBar) = Unit
+    }
+
+    private fun rebuildWhiteBalanceChips(caps: CameraCaps) {
+        wbChips.removeAllViews()
+        for (wb in caps.whiteBalances) {
+            wbChips.addView(chip(wbChips, wb.label) { engine.update { it.copy(whiteBalance = wb) } }.apply { tag = wb })
+        }
+    }
+
+    private fun renderAdjust() {
+        val beauty = BeautyStore.current
+        for (i in 0 until smoothRow.childCount) smoothRow.getChildAt(i).let { it.isActivated = it.tag == nearestBeautyLevel(beauty.smooth) }
+        for (i in 0 until brightRow.childCount) brightRow.getChildAt(i).let { it.isActivated = it.tag == nearestBeautyLevel(beauty.bright) }
+        val controls = engine.controls
+        val caps = engine.caps
+        if (caps != null && caps.evStep > 0f && caps.evMax > caps.evMin) {
+            evSeek.isEnabled = true
+            evSeek.max = Math.round((caps.evMax - caps.evMin) / caps.evStep)
+            evSeek.progress = Math.round((controls.ev - caps.evMin) / caps.evStep)
+        } else {
+            evSeek.isEnabled = false
+        }
+        evLabel.text = getString(R.string.label_ev, controls.ev)
+        for (i in 0 until wbChips.childCount) {
+            val view = wbChips.getChildAt(i)
+            view.isActivated = view.tag == controls.whiteBalance
+        }
+        lockChip.isActivated = controls.aeLock
+    }
+
+    private fun setUpChat() {
+        chatButton.setOnClickListener {
+            val show = chatPanel.visibility != View.VISIBLE
+            chatPanel.visibility = if (show) View.VISIBLE else View.GONE
+            if (show) adjustPanel.visibility = View.GONE
+            if (show) {
+                loadChatSettings()
+                chatScroll.post { chatScroll.fullScroll(View.FOCUS_DOWN) }
+            } else {
+                getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(chatInput.windowToken, 0)
+            }
+            render(LiveState.current)
+        }
+        findViewById<View>(R.id.chat_send).setOnClickListener { sendChat(notice = false) }
+        findViewById<View>(R.id.chat_notice).setOnClickListener { sendChat(notice = true) }
+        chatInput.setOnEditorActionListener { _, action, _ ->
+            if (action == EditorInfo.IME_ACTION_SEND) sendChat(notice = false)
+            action == EditorInfo.IME_ACTION_SEND
+        }
+        readAloudChip.setOnClickListener {
+            ChzzkPrefs.setReadAloud(this, !ChzzkPrefs.readAloud(this))
+            renderChatChips()
+        }
+        slowChip.setOnClickListener {
+            val current = chatSettings ?: return@setOnClickListener
+            updateChatSettings { it.updateChatSettings(current, slowModeSec = if (current.slowModeSec > 0) 0 else SLOW_MODE_SEC) }
+        }
+        followerChip.setOnClickListener {
+            val current = chatSettings ?: return@setOnClickListener
+            updateChatSettings { it.updateChatSettings(current, followerOnly = !current.followerOnly) }
+        }
+    }
+
+    private fun loadChatSettings() {
+        if (!ChzzkPrefs.loggedIn(this)) {
+            chatSettings = null
+            renderChatChips()
+            return
+        }
+        ChzzkAccount.run(this, { it.chatSettings() }) { result ->
+            chatSettings = result.getOrNull()
+            result.exceptionOrNull()?.let { showError(it) }
+            renderChatChips()
+        }
+    }
+
+    private fun updateChatSettings(change: (ChzzkApi) -> Unit) {
+        ChzzkAccount.run(this, { api ->
+            change(api)
+            api.chatSettings()
+        }) { result ->
+            result.onSuccess { chatSettings = it }.onFailure { showError(it) }
+            renderChatChips()
+        }
+    }
+
+    private fun sendChat(notice: Boolean) {
+        val text = chatInput.text.toString().trim()
+        if (text.isEmpty()) return
+        chatInput.setText("")
+        ChzzkAccount.run(this, { if (notice) it.sendNotice(text) else it.sendChat(text) }) { result ->
+            result.onSuccess { if (notice) Toast.makeText(this, R.string.toast_notice_sent, Toast.LENGTH_SHORT).show() }
+                .onFailure {
+                    chatInput.setText(text) // 못 보낸 글은 되돌려 둔다
+                    showError(it)
+                }
+        }
+    }
+
+    private fun renderChatChips() {
+        val settings = chatSettings
+        slowChip.isEnabled = settings != null
+        followerChip.isEnabled = settings != null
+        slowChip.isActivated = (settings?.slowModeSec ?: 0) > 0
+        followerChip.isActivated = settings?.followerOnly == true
+        readAloudChip.isActivated = ChzzkPrefs.readAloud(this)
+    }
+
+    /** 새로 온 줄만 덧붙이고, 100줄이 넘으면 오래된 줄을 뺀다. */
+    private fun renderChat() {
+        val status = ChzzkChat.status
+        chatStatus.text = when (status.state) {
+            ChzzkChatSession.State.CONNECTING -> getString(R.string.chat_status_connecting)
+            ChzzkChatSession.State.CONNECTED -> status.message?.let { getString(R.string.chat_status_connected_note, it) }
+                ?: getString(R.string.chat_status_connected)
+            ChzzkChatSession.State.RETRYING -> getString(R.string.chat_status_retrying, status.message ?: "")
+            ChzzkChatSession.State.NEEDS_LOGIN -> getString(R.string.chat_status_login)
+            ChzzkChatSession.State.STOPPED -> getString(R.string.chat_status_stopped)
+        }
+        renderChatChips()
+        val lines = ChzzkChat.lines
+        val total = ChzzkChat.total
+        val fresh = if (shownTotal < 0 || total < shownTotal) {
+            chatLines.removeAllViews()
+            lines.size
+        } else {
+            (total - shownTotal).coerceAtMost(lines.size.toLong()).toInt()
+        }
+        val atBottom = !chatScroll.canScrollVertically(1)
+        for (event in lines.takeLast(fresh)) chatLines.addView(chatLine(event))
+        shownTotal = total
+        while (chatLines.childCount > MAX_CHAT_VIEWS) chatLines.removeViewAt(0)
+        if (atBottom) chatScroll.post { chatScroll.fullScroll(View.FOCUS_DOWN) }
+    }
+
+    private fun chatLine(event: ChzzkEvent): TextView {
+        val text = SpannableStringBuilder()
+        var highlight = false
+        when (event) {
+            is ChzzkEvent.Chat -> {
+                text.append(event.nickname, StyleSpan(Typeface.BOLD), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                text.setSpan(ForegroundColorSpan(nickColor(event.nickname)), 0, text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                text.append("  ").append(event.content)
+            }
+            is ChzzkEvent.Donation -> {
+                highlight = true
+                text.append(getString(R.string.chat_line_donation, event.nickname, event.amount, event.text))
+            }
+            is ChzzkEvent.Subscription -> {
+                highlight = true
+                text.append(getString(R.string.chat_line_subscription, event.nickname, event.month))
+            }
+            is ChzzkEvent.System -> text.append(event.type)
+        }
+        return TextView(this).apply {
+            this.text = text
+            setTextColor(if (highlight) 0xFF000000.toInt() else 0xFFFFFFFF.toInt())
+            textSize = 13f
+            setPadding(6, 3, 6, 3)
+            if (highlight) setBackgroundColor(0xE6FFD54F.toInt())
+        }
+    }
+
+    private fun nickColor(name: String): Int = NICK_COLORS[(name.hashCode() and 0x7FFFFFFF) % NICK_COLORS.size]
+
+    // ---------------------------------------------------------------------------------------------
+    // 방송 설정 (서버 주소, 스트림 키, 화질)
+
+    private fun setUpQualityControls() {
+        for (height in LiveQuality.HEIGHTS) {
+            for (fps in LiveQuality.FPS_VALUES) {
+                val view = chip(presetRow, getString(R.string.quality_preset, height, fps)) {
+                    draftQuality = draftQuality.withPreset(height, fps)
+                    renderQuality()
+                }
+                view.tag = height to fps
+                presetRow.addView(view)
+            }
+        }
+        bitrateSeek.max = (LiveQuality.MAX_KBPS - LiveQuality.MIN_KBPS) / LiveQuality.STEP_KBPS
+        bitrateSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) {
+                if (!fromUser) return
+                draftQuality = draftQuality.copy(bitrateKbps = LiveQuality.MIN_KBPS + progress * LiveQuality.STEP_KBPS)
+                renderQuality()
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar) = Unit
+            override fun onStopTrackingTouch(seekBar: SeekBar) = Unit
+        })
+        keyFrame1.setOnClickListener {
+            draftQuality = draftQuality.copy(keyFrameS = 1)
+            renderQuality()
+        }
+        keyFrame2.setOnClickListener {
+            draftQuality = draftQuality.copy(keyFrameS = 2)
+            renderQuality()
+        }
+    }
+
+    private fun renderQuality() {
+        val q = draftQuality
+        for (i in 0 until presetRow.childCount) {
+            val view = presetRow.getChildAt(i)
+            view.isActivated = view.tag == (q.height to q.fps)
+        }
+        bitrateSeek.progress = (q.bitrateKbps - LiveQuality.MIN_KBPS) / LiveQuality.STEP_KBPS
+        bitrateLabel.text = getString(R.string.label_bitrate, q.bitrateKbps / 1000f)
+        keyFrame1.isActivated = q.keyFrameS == 1
+        keyFrame2.isActivated = q.keyFrameS == 2
+    }
+
+    /** 설정 창을 열면 그 뒤의 버튼·줌·위젯을 숨긴다 (가로 화면에서 겹쳐 보이지 않게). */
+    private fun showSettings(show: Boolean) {
+        val behind = if (show) View.INVISIBLE else View.VISIBLE
+        findViewById<View>(R.id.controls).visibility = behind
+        zoomBar.visibility = behind
+        widgetLayer.visibility = behind
+        if (show) {
+            chatPanel.visibility = View.GONE
+            adjustPanel.visibility = View.GONE
+        }
+        if (show) {
+            serverInput.setText(LivePrefs.serverUrl(this))
+            keyInput.setText(LivePrefs.streamKey(this))
+            draftQuality = LivePrefs.quality(this)
+            renderQuality()
+            val overlays = OverlayStore.current
+            clientIdInput.setText(ChzzkPrefs.clientId(this))
+            clientSecretInput.setText(ChzzkPrefs.clientSecret(this))
+            redirectInput.setText(ChzzkPrefs.redirectUri(this))
+            setSecretVisible(false)
+            renderChzzkSettings()
+            chatUrlInput.setText(overlays.chat.url)
+            alertUrlInput.setText(overlays.alert.url)
+            // 주소가 아직 없으면 "방송 화면에 넣기"를 켠 채로 시작한다.
+            draftChatStream = overlays.chat.stream || !overlays.chat.active
+            draftAlertStream = overlays.alert.stream || !overlays.alert.active
+            renderWidgetDraft()
+            setEditingWidgets(false)
+            settingsPanel.visibility = View.VISIBLE
+        } else {
+            settingsPanel.visibility = View.GONE
+            getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(settingsPanel.windowToken, 0)
+        }
+    }
+
+    /** 저장하고 닫는다. 잘못된 값이 있으면 그 칸에 표시하고 false. */
+    private fun saveSettings(): Boolean {
+        val server = serverInput.text.toString().trim()
+        val key = keyInput.text.toString().trim()
+        val chatUrl = chatUrlInput.text.toString().trim()
+        val alertUrl = alertUrlInput.text.toString().trim()
+        when {
+            RtmpUrl.parse(server) == null -> serverInput.error = getString(R.string.error_bad_server)
+            key.isEmpty() -> keyInput.error = getString(R.string.error_no_key)
+            !WidgetUrls.valid(chatUrl) -> chatUrlInput.error = getString(R.string.error_bad_widget_url)
+            !WidgetUrls.valid(alertUrl) -> alertUrlInput.error = getString(R.string.error_bad_widget_url)
+            else -> {
+                LivePrefs.save(this, server, key)
+                LivePrefs.saveQuality(this, draftQuality)
+                saveChzzkApp()
+                OverlayStore.update {
+                    it.copy(
+                        chat = WidgetDefaults.placeChat(it.chat, chatUrl).copy(url = chatUrl, stream = draftChatStream, visible = true),
+                        alert = it.alert.copy(url = alertUrl, stream = draftAlertStream, visible = true),
+                    )
+                }
+                showSettings(false)
+                return true
+            }
+        }
+        return false
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // 상태
+
+    private fun render(s: LiveState.Status) {
+        val idle = s.phase == LiveState.Phase.IDLE
+        liveButton.isActivated = !idle
+        liveButton.setText(if (idle) R.string.btn_start else R.string.btn_stop_short)
+        settingsButton.isEnabled = idle
+        settingsButton.alpha = if (idle) 1f else 0.4f
+
+        val lines = mutableListOf<String>()
+        lines += when (s.phase) {
+            LiveState.Phase.IDLE -> s.message?.let { getString(R.string.status_failed, it) } ?: getString(R.string.status_idle)
+            LiveState.Phase.CONNECTING -> getString(R.string.status_connecting)
+            LiveState.Phase.LIVE -> getString(R.string.status_live, elapsed(s.startedAtMs), s.sendKbps / 1000f)
+            LiveState.Phase.RECONNECTING -> getString(R.string.status_reconnecting, s.message ?: "")
+        }
+        if (!idle) {
+            s.format?.let { lines += getString(R.string.status_format, "${it.height}p${it.fps}", s.targetKbps / 1000f) }
+            val network = NetworkLabel.current(this)
+            lines += if (s.droppedFrames > 0) {
+                getString(R.string.status_network_drops, network, s.droppedFrames)
+            } else {
+                getString(R.string.status_network, network)
+            }
+            if (s.heatLevel > 0) lines += getString(R.string.status_heat)
+            if (s.netLevel > 0) lines += getString(R.string.status_net)
+            s.micError?.let { lines += getString(R.string.status_no_mic, it) }
+            if (s.coverUnavailable) lines += getString(R.string.status_cover_unavailable)
+        }
+        if (LiveControls.micMuted) lines += getString(R.string.status_mic_muted)
+        if (LiveControls.covered) lines += getString(R.string.status_covered)
+        val device = DeviceStatus.read(this)
+        if (device.batteryPercent >= 0) lines += getString(R.string.status_battery, device.batteryPercent, device.temperatureC)
+        status.text = lines.joinToString("\n")
+
+        micButton.isActivated = LiveControls.micMuted
+        micButton.setText(if (LiveControls.micMuted) R.string.btn_mic_unmute else R.string.btn_mic_mute)
+        coverButton.isActivated = LiveControls.covered
+        coverButton.setText(if (LiveControls.covered) R.string.btn_uncover else R.string.btn_cover)
+        coverBanner.visibility = if (LiveControls.covered) View.VISIBLE else View.GONE
+        chatButton.isActivated = chatPanel.visibility == View.VISIBLE
+        adjustButton.isActivated = adjustPanel.visibility == View.VISIBLE
+    }
+
+    private fun elapsed(startedAtMs: Long): String {
+        val seconds = ((SystemClock.elapsedRealtime() - startedAtMs) / 1000).coerceAtLeast(0)
+        return "%d:%02d:%02d".format(seconds / 3600, seconds / 60 % 60, seconds % 60)
+    }
+
+    private fun hasCameraPermission() = checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+
+    private fun requiredPermissions(): Array<String> {
+        val list = mutableListOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) list += Manifest.permission.POST_NOTIFICATIONS
+        return list.toTypedArray()
+    }
+
+    /** 미리보기를 화면비를 지키며 가운데에 맞춘다 (캠뉴런 MainActivity와 같은 변환). */
+    private fun applyPreviewTransform() {
+        val size = engine.previewSize ?: return
+        val viewWidth = preview.width.toFloat()
+        val viewHeight = preview.height.toFloat()
+        if (viewWidth == 0f || viewHeight == 0f) return
+
+        @Suppress("DEPRECATION")
+        val rotation = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) display?.rotation ?: 0 else windowManager.defaultDisplay.rotation
+        val matrix = Matrix()
+        val centerX = viewWidth / 2
+        val centerY = viewHeight / 2
+        if (rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_270) {
+            val viewRect = RectF(0f, 0f, viewWidth, viewHeight)
+            val bufferRect = RectF(0f, 0f, size.height.toFloat(), size.width.toFloat())
+            bufferRect.offset(centerX - bufferRect.centerX(), centerY - bufferRect.centerY())
+            matrix.setRectToRect(viewRect, bufferRect, Matrix.ScaleToFit.FILL)
+            val scale = min(viewHeight / size.height, viewWidth / size.width)
+            matrix.postScale(scale, scale, centerX, centerY)
+            matrix.postRotate(90f * (rotation - 2), centerX, centerY)
+        } else if (rotation == Surface.ROTATION_180) {
+            matrix.postRotate(180f, centerX, centerY)
+        }
+        preview.setTransform(matrix)
+        renderWidgets()
+    }
+
+    companion object {
+        private const val REQUEST_PERMISSIONS = 1
+        private const val FOCUS_RING_MS = 1_200L
+        private const val REQUEST_LOGIN = 2
+
+        /** 캠뉴런과 같은 뷰티 보정 단계 (0~100). */
+        val BEAUTY_LEVELS = listOf(
+            R.string.beauty_off to 0,
+            R.string.beauty_weak to 35,
+            R.string.beauty_medium to 65,
+            R.string.beauty_strong to 100,
+        )
+
+        fun nearestBeautyLevel(value: Int): Int = BEAUTY_LEVELS.minBy { kotlin.math.abs(it.second - value) }.second
+        private const val EXIT_WAIT_MS = 6_000L
+        private const val EXIT_SETTLE_MS = 600L
+        private const val SLOW_MODE_SEC = 5
+        private const val MAX_CATEGORY_RESULTS = 10
+        private const val MAX_CHAT_VIEWS = 100
+        private val NICK_COLORS = intArrayOf(0xFF7CFC00.toInt(), 0xFFFFD54F.toInt(), 0xFF80D8FF.toInt(), 0xFFFF8A80.toInt(), 0xFFB388FF.toInt(), 0xFFA7FFEB.toInt())
+    }
+}

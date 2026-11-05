@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 앱 아이콘: 캠코더 + 송출 중 빨간 점. 좌표는 store/make-icon.ps1과 같다 (바꾸면 둘 다 바꿀 것). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M33,39 H61 A7,7 0 0 1 68,46 V62 A7,7 0 0 1 61,69 H33 A7,7 0 0 1 26,62 V46 A7,7 0 0 1 33,39 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M70,49 L82,42 V66 L70,59 Z" />
+    <path
+        android:fillColor="#1C1E24"
+        android:pathData="M36,54 A11,11 0 1 0 58,54 A11,11 0 1 0 36,54 Z" />
+    <path
+        android:fillColor="#FFD54F"
+        android:pathData="M41.5,54 A5.5,5.5 0 1 0 52.5,54 A5.5,5.5 0 1 0 41.5,54 Z" />
+    <path
+        android:fillColor="#FF5252"
+        android:pathData="M69,35 A5,5 0 1 0 79,35 A5,5 0 1 0 69,35 Z" />
+</vector>

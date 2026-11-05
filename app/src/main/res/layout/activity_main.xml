@@ -1,0 +1,695 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    가로 화면. 오른손 엄지가 닿는 오른쪽에 버튼을 모은다.
+    바깥 줄: 방송 설정 · 전면/후면 · 방송 시작/종료. 그 왼쪽 줄: 방송 중에 켜고 끄는 마이크 · 가리기 · 플래시 · 손떨림.
+    아래 가운데: 줌 단계. 미리보기를 누르면 그곳에 초점, 길게 누르면 자동 초점, 두 손가락으로 줌.
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/black">
+
+    <TextureView
+        android:id="@+id/preview"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- 채팅창·후원 알림 위젯 (시청자에게 보이는 자리 그대로). 편집 중이 아니면 터치를 받지 않는다. -->
+    <FrameLayout
+        android:id="@+id/widget_layer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <View
+        android:id="@+id/focus_ring"
+        android:layout_width="64dp"
+        android:layout_height="64dp"
+        android:background="@drawable/focus_ring"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/cover_banner"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="76dp"
+        android:maxWidth="300dp"
+        android:gravity="center"
+        android:background="@drawable/bg_banner"
+        android:paddingStart="16dp"
+        android:paddingTop="8dp"
+        android:paddingEnd="16dp"
+        android:paddingBottom="8dp"
+        android:text="@string/cover_banner"
+        android:textColor="@android:color/black"
+        android:textSize="14sp"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/status"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|start"
+        android:layout_margin="16dp"
+        android:background="@drawable/bg_panel"
+        android:paddingStart="10dp"
+        android:paddingTop="6dp"
+        android:paddingEnd="10dp"
+        android:paddingBottom="6dp"
+        android:textColor="@android:color/white"
+        android:textSize="14sp" />
+
+    <!-- 치지직 채팅 (방송하는 사람만 본다). 왼쪽, 줌 버튼 줄 위에서 끝난다. -->
+    <LinearLayout
+        android:id="@+id/chat_panel"
+        android:layout_width="250dp"
+        android:layout_height="match_parent"
+        android:layout_gravity="start|bottom"
+        android:layout_marginStart="16dp"
+        android:layout_marginTop="150dp"
+        android:layout_marginBottom="84dp"
+        android:background="@drawable/bg_panel"
+        android:orientation="vertical"
+        android:padding="8dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/chat_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="#CCFFFFFF"
+            android:textSize="11sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/chip_slow"
+                style="@style/ChipSmall"
+                android:text="@string/chip_slow" />
+
+            <TextView
+                android:id="@+id/chip_follower"
+                style="@style/ChipSmall"
+                android:text="@string/chip_follower" />
+
+            <TextView
+                android:id="@+id/chip_read_aloud"
+                style="@style/ChipSmall"
+                android:text="@string/chip_read_aloud" />
+        </LinearLayout>
+
+        <ScrollView
+            android:id="@+id/chat_scroll"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_marginTop="4dp"
+            android:layout_weight="1">
+
+            <LinearLayout
+                android:id="@+id/chat_lines"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical" />
+        </ScrollView>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <EditText
+                android:id="@+id/chat_input"
+                style="@style/PanelInput"
+                android:layout_width="0dp"
+                android:layout_marginTop="0dp"
+                android:layout_weight="1"
+                android:hint="@string/chat_hint"
+                android:imeOptions="actionSend"
+                android:inputType="text"
+                android:maxLength="100"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/chat_send"
+                style="@style/ChipSmall"
+                android:layout_marginStart="4dp"
+                android:layout_marginEnd="0dp"
+                android:text="@string/chat_send" />
+
+            <TextView
+                android:id="@+id/chat_notice"
+                style="@style/ChipSmall"
+                android:layout_marginStart="4dp"
+                android:layout_marginEnd="0dp"
+                android:text="@string/chat_notice" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- 보정: 뷰티(피부 보정·밝게)와 카메라(노출·화이트밸런스·고정). 방송 중에도 바로 바뀐다. -->
+    <ScrollView
+        android:id="@+id/adjust_panel"
+        android:layout_width="280dp"
+        android:layout_height="match_parent"
+        android:layout_gravity="start|bottom"
+        android:layout_marginStart="16dp"
+        android:layout_marginTop="150dp"
+        android:layout_marginBottom="84dp"
+        android:background="@drawable/bg_settings_panel"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="12dp">
+
+            <!-- 캠뉴런과 같은 뷰티 보정: 끔·약하게·보통·강하게 (0·35·65·100) -->
+            <TextView
+                style="@style/PanelLabel"
+                android:text="@string/label_smooth" />
+
+            <LinearLayout
+                android:id="@+id/row_beauty_smooth"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:orientation="horizontal" />
+
+            <TextView
+                style="@style/PanelLabel"
+                android:layout_marginTop="8dp"
+                android:text="@string/label_bright" />
+
+            <LinearLayout
+                android:id="@+id/row_beauty_bright"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:orientation="horizontal" />
+
+            <TextView
+                android:id="@+id/label_ev"
+                style="@style/PanelLabel"
+                android:layout_marginTop="8dp" />
+
+            <SeekBar
+                android:id="@+id/seek_ev"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+
+            <TextView
+                style="@style/PanelLabel"
+                android:layout_marginTop="8dp"
+                android:text="@string/label_white_balance" />
+
+            <HorizontalScrollView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp">
+
+                <LinearLayout
+                    android:id="@+id/wb_chips"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal" />
+            </HorizontalScrollView>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/chip_lock"
+                    style="@style/ChipSmall"
+                    android:layout_height="34dp"
+                    android:text="@string/chip_lock" />
+
+                <TextView
+                    android:id="@+id/btn_adjust_reset"
+                    style="@style/ChipSmall"
+                    android:layout_height="34dp"
+                    android:text="@string/btn_adjust_reset" />
+            </LinearLayout>
+
+            <TextView
+                style="@style/PanelLabel"
+                android:layout_marginTop="8dp"
+                android:text="@string/adjust_note"
+                android:textSize="11sp" />
+        </LinearLayout>
+    </ScrollView>
+
+    <LinearLayout
+        android:id="@+id/zoom_bar"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="16dp"
+        android:orientation="horizontal" />
+
+    <LinearLayout
+        android:id="@+id/controls"
+        android:layout_width="wrap_content"
+        android:layout_height="match_parent"
+        android:layout_gravity="end"
+        android:layout_marginEnd="20dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="14dp"
+            android:gravity="center_horizontal"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/btn_chat"
+                style="@style/QuickButton"
+                android:layout_marginTop="0dp"
+                android:text="@string/btn_chat" />
+
+            <TextView
+                android:id="@+id/btn_adjust"
+                style="@style/QuickButton"
+                android:text="@string/btn_adjust" />
+
+            <TextView
+                android:id="@+id/btn_mic"
+                style="@style/QuickButton"
+                android:text="@string/btn_mic_mute" />
+
+            <TextView
+                android:id="@+id/btn_cover"
+                style="@style/QuickButton"
+                android:text="@string/btn_cover" />
+
+            <TextView
+                android:id="@+id/btn_torch"
+                style="@style/QuickButton"
+                android:text="@string/btn_torch" />
+
+            <TextView
+                android:id="@+id/btn_stabilization"
+                style="@style/QuickButton"
+                android:text="@string/btn_stabilization" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center_horizontal"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/btn_settings"
+                style="@style/SideButton"
+                android:text="@string/btn_settings" />
+
+            <TextView
+                android:id="@+id/btn_flip"
+                style="@style/SideButton"
+                android:layout_marginTop="16dp"
+                android:text="@string/btn_flip" />
+
+            <TextView
+                android:id="@+id/btn_live"
+                android:layout_width="96dp"
+                android:layout_height="96dp"
+                android:layout_marginTop="24dp"
+                android:background="@drawable/bg_live_button"
+                android:gravity="center"
+                android:text="@string/btn_start"
+                android:textColor="@android:color/white"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- 방송 설정: 서버 주소, 스트림 키, 화질. 폰에만 저장한다. 가로 화면에서 길어지므로 스크롤. -->
+    <ScrollView
+        android:id="@+id/settings_panel"
+        android:layout_width="460dp"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:layout_marginTop="12dp"
+        android:layout_marginBottom="12dp"
+        android:background="@drawable/bg_settings_panel"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="20dp">
+
+            <TextView
+                style="@style/PanelLabel"
+                android:text="@string/label_server" />
+
+            <EditText
+                android:id="@+id/input_server"
+                style="@style/PanelInput"
+                android:inputType="textUri" />
+
+            <TextView
+                style="@style/PanelLabel"
+                android:layout_marginTop="12dp"
+                android:text="@string/label_key" />
+
+            <EditText
+                android:id="@+id/input_key"
+                style="@style/PanelInput"
+                android:hint="@string/hint_key"
+                android:inputType="textPassword" />
+
+            <TextView
+                style="@style/PanelLabel"
+                android:layout_marginTop="8dp"
+                android:text="@string/settings_note"
+                android:textSize="12sp" />
+
+            <TextView
+                style="@style/PanelLabel"
+                android:layout_marginTop="20dp"
+                android:text="@string/label_chzzk" />
+
+            <TextView
+                android:id="@+id/chzzk_status"
+                style="@style/PanelLabel"
+                android:layout_marginTop="4dp"
+                android:textColor="@android:color/white" />
+
+            <TextView
+                style="@style/PanelLabel"
+                android:layout_marginTop="8dp"
+                android:text="@string/label_client_id" />
+
+            <EditText
+                android:id="@+id/input_client_id"
+                style="@style/PanelInput"
+                android:inputType="text" />
+
+            <TextView
+                style="@style/PanelLabel"
+                android:layout_marginTop="8dp"
+                android:text="@string/label_client_secret" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <EditText
+                    android:id="@+id/input_client_secret"
+                    style="@style/PanelInput"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:inputType="textPassword" />
+
+                <TextView
+                    android:id="@+id/btn_show_secret"
+                    style="@style/Chip"
+                    android:layout_marginStart="8dp"
+                    android:layout_marginEnd="0dp"
+                    android:text="@string/btn_show_secret" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/secret_saved"
+                style="@style/PanelLabel"
+                android:layout_marginTop="2dp"
+                android:textSize="12sp" />
+
+            <TextView
+                style="@style/PanelLabel"
+                android:layout_marginTop="8dp"
+                android:text="@string/label_redirect" />
+
+            <EditText
+                android:id="@+id/input_redirect"
+                style="@style/PanelInput"
+                android:inputType="textUri" />
+
+            <TextView
+                style="@style/PanelLabel"
+                android:layout_marginTop="6dp"
+                android:text="@string/chzzk_app_note"
+                android:textSize="12sp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/btn_chzzk_login"
+                    style="@style/SideButton"
+                    android:text="@string/btn_chzzk_login" />
+
+                <TextView
+                    android:id="@+id/btn_chzzk_logout"
+                    style="@style/SideButton"
+                    android:layout_marginStart="12dp"
+                    android:text="@string/btn_chzzk_logout" />
+
+                <TextView
+                    android:id="@+id/btn_chzzk_check"
+                    style="@style/SideButton"
+                    android:layout_marginStart="12dp"
+                    android:text="@string/btn_chzzk_check" />
+            </LinearLayout>
+
+            <!-- 로그인했을 때만 보인다 -->
+            <LinearLayout
+                android:id="@+id/live_info_section"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <TextView
+                    style="@style/PanelLabel"
+                    android:layout_marginTop="20dp"
+                    android:text="@string/label_live_info" />
+
+                <TextView
+                    android:id="@+id/btn_live_info_load"
+                    style="@style/SideButton"
+                    android:layout_marginTop="8dp"
+                    android:text="@string/btn_live_info_load" />
+
+                <TextView
+                    style="@style/PanelLabel"
+                    android:layout_marginTop="10dp"
+                    android:text="@string/label_title" />
+
+                <EditText
+                    android:id="@+id/input_title"
+                    style="@style/PanelInput"
+                    android:inputType="text"
+                    android:maxLength="100" />
+
+                <TextView
+                    style="@style/PanelLabel"
+                    android:layout_marginTop="10dp"
+                    android:text="@string/label_category" />
+
+                <TextView
+                    android:id="@+id/category_current"
+                    style="@style/PanelLabel"
+                    android:layout_marginTop="2dp"
+                    android:textColor="@android:color/white" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <EditText
+                        android:id="@+id/input_category_search"
+                        style="@style/PanelInput"
+                        android:layout_width="0dp"
+                        android:layout_weight="1"
+                        android:hint="@string/hint_category_search"
+                        android:imeOptions="actionSearch"
+                        android:inputType="text" />
+
+                    <TextView
+                        android:id="@+id/btn_category_search"
+                        style="@style/Chip"
+                        android:layout_marginStart="8dp"
+                        android:layout_marginEnd="0dp"
+                        android:text="@string/btn_search" />
+                </LinearLayout>
+
+                <HorizontalScrollView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp">
+
+                    <LinearLayout
+                        android:id="@+id/category_results"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal" />
+                </HorizontalScrollView>
+
+                <TextView
+                    style="@style/PanelLabel"
+                    android:layout_marginTop="10dp"
+                    android:text="@string/label_tags" />
+
+                <EditText
+                    android:id="@+id/input_tags"
+                    style="@style/PanelInput"
+                    android:inputType="text" />
+
+                <TextView
+                    android:id="@+id/btn_live_info_save"
+                    style="@style/SideButton"
+                    android:layout_marginTop="10dp"
+                    android:text="@string/btn_live_info_save" />
+            </LinearLayout>
+
+            <TextView
+                style="@style/PanelLabel"
+                android:layout_marginTop="16dp"
+                android:text="@string/label_quality" />
+
+            <LinearLayout
+                android:id="@+id/quality_presets"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:orientation="horizontal" />
+
+            <TextView
+                android:id="@+id/label_bitrate"
+                style="@style/PanelLabel"
+                android:layout_marginTop="12dp" />
+
+            <SeekBar
+                android:id="@+id/seek_bitrate"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp" />
+
+            <TextView
+                style="@style/PanelLabel"
+                android:layout_marginTop="12dp"
+                android:text="@string/label_key_frame" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/key_frame_1"
+                    style="@style/Chip"
+                    android:text="@string/key_frame_1" />
+
+                <TextView
+                    android:id="@+id/key_frame_2"
+                    style="@style/Chip"
+                    android:text="@string/key_frame_2" />
+            </LinearLayout>
+
+            <TextView
+                style="@style/PanelLabel"
+                android:layout_marginTop="8dp"
+                android:text="@string/quality_note"
+                android:textSize="12sp" />
+
+            <TextView
+                style="@style/PanelLabel"
+                android:layout_marginTop="20dp"
+                android:text="@string/label_widgets" />
+
+            <TextView
+                style="@style/PanelLabel"
+                android:layout_marginTop="8dp"
+                android:text="@string/label_chat_url" />
+
+            <EditText
+                android:id="@+id/input_chat_url"
+                style="@style/PanelInput"
+                android:hint="@string/hint_widget_url"
+                android:inputType="textUri" />
+
+            <TextView
+                android:id="@+id/chip_chat_stream"
+                style="@style/Chip"
+                android:layout_marginTop="6dp"
+                android:text="@string/chip_widget_stream" />
+
+            <TextView
+                style="@style/PanelLabel"
+                android:layout_marginTop="12dp"
+                android:text="@string/label_alert_url" />
+
+            <EditText
+                android:id="@+id/input_alert_url"
+                style="@style/PanelInput"
+                android:hint="@string/hint_widget_url"
+                android:inputType="textUri" />
+
+            <TextView
+                android:id="@+id/chip_alert_stream"
+                style="@style/Chip"
+                android:layout_marginTop="6dp"
+                android:text="@string/chip_widget_stream" />
+
+            <TextView
+                android:id="@+id/btn_widget_edit"
+                style="@style/SideButton"
+                android:layout_marginTop="12dp"
+                android:text="@string/btn_widget_edit" />
+
+            <TextView
+                style="@style/PanelLabel"
+                android:layout_marginTop="8dp"
+                android:text="@string/widget_note"
+                android:textSize="12sp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:gravity="end"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/btn_cancel"
+                    style="@style/SideButton"
+                    android:text="@string/btn_cancel" />
+
+                <TextView
+                    android:id="@+id/btn_save"
+                    style="@style/SideButton"
+                    android:layout_marginStart="12dp"
+                    android:text="@string/btn_save" />
+            </LinearLayout>
+        </LinearLayout>
+    </ScrollView>
+
+    <!-- 위젯 위치 조정 중에만 보인다. 위쪽은 후원 알림 기본 자리라 가운데에 둔다. -->
+    <TextView
+        android:id="@+id/btn_widget_done"
+        style="@style/SideButton"
+        android:layout_gravity="center"
+        android:text="@string/btn_widget_done"
+        android:visibility="gone" />
+</FrameLayout>

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 테마 아이콘(Android 13+)용 한 가지 색 버전. 렌즈 테두리는 구멍으로 뚫는다. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#000000"
+        android:fillType="evenOdd"
+        android:pathData="M33,39 H61 A7,7 0 0 1 68,46 V62 A7,7 0 0 1 61,69 H33 A7,7 0 0 1 26,62 V46 A7,7 0 0 1 33,39 Z M36,54 A11,11 0 1 0 58,54 A11,11 0 1 0 36,54 Z" />
+    <path
+        android:fillColor="#000000"
+        android:pathData="M70,49 L82,42 V66 L70,59 Z M41.5,54 A5.5,5.5 0 1 0 52.5,54 A5.5,5.5 0 1 0 41.5,54 Z M69,35 A5,5 0 1 0 79,35 A5,5 0 1 0 69,35 Z" />
+</vector>
