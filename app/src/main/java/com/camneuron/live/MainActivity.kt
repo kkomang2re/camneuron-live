@@ -47,6 +47,7 @@ import com.camneuron.core.camera.WhiteBalance
 import com.camneuron.core.encode.BeautySettings
 import com.camneuron.core.encode.BeautyStore
 import com.camneuron.core.device.DeviceStatus
+import com.camneuron.core.overlay.OverlayItem
 import com.camneuron.core.overlay.OverlaySettings
 import com.camneuron.core.overlay.OverlayStore
 import com.camneuron.live.chzzk.ChzzkAccount
@@ -62,6 +63,7 @@ import com.camneuron.live.chzzk.ChzzkPrefs
 import com.camneuron.live.chzzk.ChzzkTags
 import com.camneuron.live.chzzk.LoginActivity
 import com.camneuron.live.rtmp.RtmpUrl
+import com.camneuron.live.widget.BrowserSources
 import com.camneuron.live.widget.WidgetCanvas
 import com.camneuron.live.widget.WidgetDefaults
 import com.camneuron.live.widget.WidgetFrame
@@ -102,6 +104,16 @@ class MainActivity : Activity() {
     private lateinit var alertUrlInput: EditText
     private lateinit var chatStreamChip: TextView
     private lateinit var alertStreamChip: TextView
+    private lateinit var sourcesList: LinearLayout
+    private lateinit var addSourceButton: TextView
+
+    /** 설정 화면에서 고치는 중인 브라우저 소스 한 줄. [base]는 저장된 것 (자리·배율을 지킨다), 새로 더한 줄이면 null. */
+    private class SourceRow(val view: View, val base: OverlayItem?, var stream: Boolean) {
+        val name: EditText = view.findViewById(R.id.input_source_name)
+        val url: EditText = view.findViewById(R.id.input_source_url)
+        val streamChip: TextView = view.findViewById(R.id.chip_source_stream)
+    }
+    private val sourceRows = mutableListOf<SourceRow>()
 
     /** 설정 화면에서 고치는 중인 "방송 화면에 넣기" (채팅창, 후원 알림). */
     private var draftChatStream = true
@@ -223,6 +235,8 @@ class MainActivity : Activity() {
         alertUrlInput = findViewById(R.id.input_alert_url)
         chatStreamChip = findViewById(R.id.chip_chat_stream)
         alertStreamChip = findViewById(R.id.chip_alert_stream)
+        sourcesList = findViewById(R.id.sources_list)
+        addSourceButton = findViewById(R.id.btn_add_source)
         OverlayStore.init(this)
         chzzkStatus = findViewById(R.id.chzzk_status)
         clientIdInput = findViewById(R.id.input_client_id)
@@ -600,17 +614,27 @@ class MainActivity : Activity() {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // 위젯 (채팅창, 후원 알림)
+    // 위젯 (채팅창, 후원 알림, 브라우저 소스)
 
     private fun setUpWidgets() {
-        val chat = WidgetFrame(this, getString(R.string.widget_chat)) { x, y, w, h ->
-            OverlayStore.update { it.copy(chat = it.chat.copy(x = x, y = y, w = w, h = h)) }
+        // 칸 번호 순서 (WidgetHost.CHAT, ALERT, 그 뒤 브라우저 소스). 뒤 칸이 위에 보인다 (방송 화면과 같은 순서).
+        widgetFrames = List(WidgetHost.COUNT) { index ->
+            WidgetFrame(
+                this, widgetTitle(index, null),
+                onMoved = { x, y, w, h ->
+                    OverlayStore.update { BrowserSources.update(it, index) { item -> item.copy(x = x, y = y, w = w, h = h) } }
+                },
+                onZoom = { zoom -> OverlayStore.update { BrowserSources.update(it, index) { item -> item.copy(zoom = zoom) } } },
+            )
         }
-        val alert = WidgetFrame(this, getString(R.string.widget_alert)) { x, y, w, h ->
-            OverlayStore.update { it.copy(alert = it.alert.copy(x = x, y = y, w = w, h = h)) }
-        }
-        widgetFrames = listOf(chat, alert) // WidgetHost.CHAT, WidgetHost.ALERT 순서
         widgetFrames.forEach { widgetLayer.addView(it) }
+        addSourceButton.setOnClickListener {
+            if (sourceRows.size >= BrowserSources.MAX) {
+                Toast.makeText(this, getString(R.string.toast_sources_full, BrowserSources.MAX), Toast.LENGTH_SHORT).show()
+            } else {
+                addSourceRow(null).url.requestFocus()
+            }
+        }
         chatStreamChip.setOnClickListener {
             draftChatStream = !draftChatStream
             renderWidgetDraft()
@@ -623,23 +647,79 @@ class MainActivity : Activity() {
             if (saveSettings()) setEditingWidgets(true)
         }
         widgetDone.setOnClickListener { setEditingWidgets(false) }
+        // 방송 중에도 된다. 옮기거나 배율을 바꾸면 바로 저장되고, 방송 세션이 같은 설정을 보고 송출 화면에도 바로 반영한다.
+        findViewById<View>(R.id.btn_widgets).setOnClickListener {
+            when {
+                editingWidgets -> setEditingWidgets(false)
+                BrowserSources.slots(OverlayStore.current).none { it?.active == true } ->
+                    Toast.makeText(this, R.string.toast_no_widgets, Toast.LENGTH_LONG).show()
+                else -> setEditingWidgets(true)
+            }
+        }
     }
 
     private fun setEditingWidgets(editing: Boolean) {
         editingWidgets = editing
         widgetFrames.forEach { it.editable = editing }
         widgetDone.visibility = if (editing) View.VISIBLE else View.GONE
-        if (editing) Toast.makeText(this, R.string.toast_widget_edit, Toast.LENGTH_LONG).show()
+        if (editing) {
+            // 채팅·보정 창이 왼쪽 위젯(채팅창 기본 자리)을 가리지 않게 닫는다.
+            chatPanel.visibility = View.GONE
+            adjustPanel.visibility = View.GONE
+            chatButton.isActivated = false
+            adjustButton.isActivated = false
+            Toast.makeText(this, R.string.toast_widget_edit, Toast.LENGTH_LONG).show()
+        }
     }
 
     /** 위젯 자리를 미리보기 속 영상 위치에 맞춘다. */
     private fun renderWidgets() {
         val image = displayedImageRect() ?: RectF()
-        val settings = OverlayStore.current
-        listOf(settings.chat, settings.alert).forEachIndexed { i, item ->
+        BrowserSources.slots(OverlayStore.current).forEachIndexed { i, slot ->
+            val item = slot ?: EMPTY_WIDGET
             val label = getString(if (WidgetCanvas.streamed(item)) R.string.widget_streamed else R.string.widget_phone_only)
-            widgetFrames[i].bind(item, image, label)
+            widgetFrames[i].bind(item, image, label, widgetTitle(i, slot))
         }
+    }
+
+    private fun widgetTitle(index: Int, item: OverlayItem?): String = when (index) {
+        WidgetHost.CHAT -> getString(R.string.widget_chat)
+        WidgetHost.ALERT -> getString(R.string.widget_alert)
+        else -> item?.name?.takeIf { it.isNotBlank() }
+            ?: getString(R.string.source_default_name, index - WidgetHost.FIRST_SOURCE + 1)
+    }
+
+    /** 설정 화면을 열 때 저장된 브라우저 소스로 줄을 다시 만든다. */
+    private fun renderSourceRows(sources: List<OverlayItem>) {
+        sourceRows.clear()
+        sourcesList.removeAllViews()
+        sources.forEach { addSourceRow(it) }
+        renderSourceButtons()
+    }
+
+    private fun addSourceRow(base: OverlayItem?): SourceRow {
+        val view = layoutInflater.inflate(R.layout.row_browser_source, sourcesList, false)
+        val row = SourceRow(view, base, stream = base?.stream ?: true)
+        row.name.setText(base?.name.orEmpty())
+        row.url.setText(base?.url.orEmpty())
+        row.streamChip.isActivated = row.stream
+        row.streamChip.setOnClickListener {
+            row.stream = !row.stream
+            row.streamChip.isActivated = row.stream
+        }
+        view.findViewById<View>(R.id.btn_source_remove).setOnClickListener {
+            sourceRows.remove(row)
+            sourcesList.removeView(view)
+            renderSourceButtons()
+        }
+        sourceRows.add(row)
+        sourcesList.addView(view)
+        renderSourceButtons()
+        return row
+    }
+
+    private fun renderSourceButtons() {
+        addSourceButton.alpha = if (sourceRows.size < BrowserSources.MAX) 1f else 0.4f
     }
 
     private fun renderWidgetDraft() {
@@ -1077,6 +1157,7 @@ class MainActivity : Activity() {
             renderChzzkSettings()
             chatUrlInput.setText(overlays.chat.url)
             alertUrlInput.setText(overlays.alert.url)
+            renderSourceRows(overlays.sources)
             // 주소가 아직 없으면 "방송 화면에 넣기"를 켠 채로 시작한다.
             draftChatStream = overlays.chat.stream || !overlays.chat.active
             draftAlertStream = overlays.alert.stream || !overlays.alert.active
@@ -1095,12 +1176,30 @@ class MainActivity : Activity() {
         val key = keyInput.text.toString().trim()
         val chatUrl = chatUrlInput.text.toString().trim()
         val alertUrl = alertUrlInput.text.toString().trim()
+        // 이름도 주소도 없는 줄은 버린다. 이름만 있으면 주소를 넣으라고 알린다.
+        val rows = sourceRows.filter { it.name.text.isNotBlank() || it.url.text.isNotBlank() }
+        val badSource = rows.firstOrNull { row ->
+            val url = row.url.text.toString().trim()
+            url.isEmpty() || !WidgetUrls.valid(url)
+        }
         when {
             RtmpUrl.parse(server) == null -> serverInput.error = getString(R.string.error_bad_server)
             key.isEmpty() -> keyInput.error = getString(R.string.error_no_key)
             !WidgetUrls.valid(chatUrl) -> chatUrlInput.error = getString(R.string.error_bad_widget_url)
             !WidgetUrls.valid(alertUrl) -> alertUrlInput.error = getString(R.string.error_bad_widget_url)
+            badSource != null -> badSource.url.apply {
+                error = getString(if (text.isBlank()) R.string.error_source_no_url else R.string.error_bad_widget_url)
+                requestFocus()
+            }
             else -> {
+                val sources = rows.mapIndexed { i, row ->
+                    (row.base ?: BrowserSources.newSource(i)).copy(
+                        name = row.name.text.toString().trim(),
+                        url = row.url.text.toString().trim(),
+                        stream = row.stream,
+                        visible = true,
+                    )
+                }
                 LivePrefs.save(this, server, key)
                 LivePrefs.saveQuality(this, draftQuality)
                 saveChzzkApp()
@@ -1108,6 +1207,7 @@ class MainActivity : Activity() {
                     it.copy(
                         chat = WidgetDefaults.placeChat(it.chat, chatUrl).copy(url = chatUrl, stream = draftChatStream, visible = true),
                         alert = it.alert.copy(url = alertUrl, stream = draftAlertStream, visible = true),
+                        sources = sources,
                     )
                 }
                 showSettings(false)
@@ -1206,6 +1306,9 @@ class MainActivity : Activity() {
         private const val REQUEST_PERMISSIONS = 1
         private const val FOCUS_RING_MS = 1_200L
         private const val REQUEST_LOGIN = 2
+
+        /** 비어 있는 위젯 칸 (안 보인다). */
+        private val EMPTY_WIDGET = OverlayItem(x = 0f, y = 0f, w = 0f, h = 0f)
 
         /** 캠뉴런과 같은 뷰티 보정 단계 (0~100). */
         val BEAUTY_LEVELS = listOf(

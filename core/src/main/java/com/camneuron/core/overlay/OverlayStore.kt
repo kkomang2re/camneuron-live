@@ -2,11 +2,12 @@ package com.camneuron.core.overlay
 
 import android.content.Context
 import android.content.SharedPreferences
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.CopyOnWriteArraySet
 
 /**
- * 치지직 채팅창·후원 알림 같은 웹 위젯 창 하나의 설정.
+ * 치지직 채팅창·후원 알림·브라우저 소스 같은 웹 위젯 창 하나의 설정.
  * 위치와 크기(x, y, w, h)는 송출 영상 기준 0~1이라 폰 화면과 OBS 합성에 똑같이 쓴다.
  */
 data class OverlayItem(
@@ -21,6 +22,8 @@ data class OverlayItem(
     /** 내용 배율 (CSS zoom) */
     val zoom: Float = 1f,
     val opacity: Float = 0.9f,
+    /** 화면에 보일 이름 (브라우저 소스). 채팅창·후원 알림은 비워 둔다. */
+    val name: String = "",
 ) {
     val active: Boolean get() = url.isNotBlank()
 
@@ -28,6 +31,7 @@ data class OverlayItem(
         .put("url", url).put("visible", visible).put("stream", stream)
         .put("x", x.toDouble()).put("y", y.toDouble()).put("w", w.toDouble()).put("h", h.toDouble())
         .put("zoom", zoom.toDouble()).put("opacity", opacity.toDouble())
+        .put("name", name)
 
     companion object {
         fun fromJson(o: JSONObject?, default: OverlayItem): OverlayItem = if (o == null) default else OverlayItem(
@@ -40,6 +44,7 @@ data class OverlayItem(
             h = o.optDouble("h", default.h.toDouble()).toFloat(),
             zoom = o.optDouble("zoom", default.zoom.toDouble()).toFloat(),
             opacity = o.optDouble("opacity", default.opacity.toDouble()).toFloat(),
+            name = o.optString("name", default.name),
         )
     }
 }
@@ -47,6 +52,8 @@ data class OverlayItem(
 data class OverlaySettings(
     val chat: OverlayItem = DEFAULT_CHAT,
     val alert: OverlayItem = DEFAULT_ALERT,
+    /** 사람이 더한 브라우저 소스 (투네이션·트윕 알림, 목표 막대 등). 그리는 순서대로. */
+    val sources: List<OverlayItem> = emptyList(),
     /** 폰 화면에서 영상이 그려지는 폭(dp = CSS px). OBS가 같은 모양으로 그리도록 함께 보낸다. */
     val referenceWidth: Float = DEFAULT_REFERENCE_WIDTH,
 ) {
@@ -54,6 +61,9 @@ data class OverlaySettings(
         val DEFAULT_CHAT = OverlayItem(x = 0.70f, y = 0.05f, w = 0.28f, h = 0.60f)
         val DEFAULT_ALERT = OverlayItem(x = 0.25f, y = 0.05f, w = 0.50f, h = 0.35f)
         const val DEFAULT_REFERENCE_WIDTH = 720f
+
+        /** 새 브라우저 소스의 자리 (OBS 알림 위젯에 흔한 800x600 정도, 가운데). */
+        val DEFAULT_SOURCE = OverlayItem(stream = true, x = 0.29f, y = 0.22f, w = 0.42f, h = 0.56f, zoom = 1f, opacity = 1f)
     }
 }
 
@@ -79,6 +89,9 @@ object OverlayStore {
             OverlaySettings(
                 chat = OverlayItem.fromJson(o.optJSONObject("chat"), OverlaySettings.DEFAULT_CHAT),
                 alert = OverlayItem.fromJson(o.optJSONObject("alert"), OverlaySettings.DEFAULT_ALERT),
+                sources = o.optJSONArray("sources")?.let { a ->
+                    (0 until a.length()).map { OverlayItem.fromJson(a.optJSONObject(it), OverlaySettings.DEFAULT_SOURCE) }
+                }.orEmpty(),
                 referenceWidth = o.optDouble("reference_width", OverlaySettings.DEFAULT_REFERENCE_WIDTH.toDouble()).toFloat(),
             )
         }.getOrDefault(OverlaySettings())
@@ -94,6 +107,7 @@ object OverlayStore {
                 JSONObject()
                     .put("chat", next.chat.toJson())
                     .put("alert", next.alert.toJson())
+                    .put("sources", JSONArray(next.sources.map { it.toJson() }))
                     .put("reference_width", next.referenceWidth.toDouble())
                     .toString(),
             )?.apply()

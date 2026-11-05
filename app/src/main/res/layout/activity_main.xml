@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
     가로 화면. 오른손 엄지가 닿는 오른쪽에 버튼을 모은다.
-    바깥 줄: 방송 설정 · 전면/후면 · 방송 시작/종료. 그 왼쪽 줄: 방송 중에 켜고 끄는 마이크 · 가리기 · 플래시 · 손떨림.
+    바깥 줄: 방송 설정 · 전면/후면 · 위젯 조정 · 방송 시작/종료. 그 왼쪽 줄: 방송 중에 켜고 끄는 마이크 · 가리기 · 플래시 · 손떨림.
     아래 가운데: 줌 단계. 미리보기를 누르면 그곳에 초점, 길게 누르면 자동 초점, 두 손가락으로 줌.
 -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
@@ -14,7 +14,7 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <!-- 채팅창·후원 알림 위젯 (시청자에게 보이는 자리 그대로). 편집 중이 아니면 터치를 받지 않는다. -->
+    <!-- 채팅창·후원 알림·브라우저 소스 위젯 (시청자에게 보이는 자리 그대로). 편집 중이 아니면 터치를 받지 않는다. -->
     <FrameLayout
         android:id="@+id/widget_layer"
         android:layout_width="match_parent"
@@ -318,6 +318,13 @@
                 style="@style/SideButton"
                 android:layout_marginTop="16dp"
                 android:text="@string/btn_flip" />
+
+            <!-- 위젯 위치·크기 조정. 방송 설정과 달리 방송 중에도 누를 수 있다. -->
+            <TextView
+                android:id="@+id/btn_widgets"
+                style="@style/SideButton"
+                android:layout_marginTop="16dp"
+                android:text="@string/btn_widgets" />
 
             <TextView
                 android:id="@+id/btn_live"
@@ -651,6 +658,24 @@
                 style="@style/Chip"
                 android:layout_marginTop="6dp"
                 android:text="@string/chip_widget_stream" />
+
+            <TextView
+                style="@style/PanelLabel"
+                android:layout_marginTop="16dp"
+                android:text="@string/label_sources" />
+
+            <!-- 브라우저 소스 줄 (row_browser_source)을 코드에서 넣는다. -->
+            <LinearLayout
+                android:id="@+id/sources_list"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical" />
+
+            <TextView
+                android:id="@+id/btn_add_source"
+                style="@style/Chip"
+                android:layout_marginTop="10dp"
+                android:text="@string/btn_add_source" />
 
             <TextView
                 android:id="@+id/btn_widget_edit"

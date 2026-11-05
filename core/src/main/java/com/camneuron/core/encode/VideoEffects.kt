@@ -542,7 +542,7 @@ class VideoEffects(
             }
         """
 
-        const val MAX_LAYERS = 4
+        const val MAX_LAYERS = 8
 
         /** 알파를 미리 곱한 그림을 [uAlpha]만큼 투명하게. */
         private const val FRAGMENT_LAYER = PRECISION + """
