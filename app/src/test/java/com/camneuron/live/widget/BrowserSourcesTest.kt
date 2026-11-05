@@ -48,16 +48,6 @@ class BrowserSourcesTest {
     }
 
     @Test
-    fun newSourcesCascadeInsideTheVideo() {
-        val first = BrowserSources.newSource(0)
-        assertEquals(OverlaySettings.DEFAULT_SOURCE, first)
-        val last = BrowserSources.newSource(BrowserSources.MAX - 1)
-        assertTrue(last.x > first.x && last.y > first.y)
-        assertTrue(last.x + last.w <= 1f && last.y + last.h <= 1f)
-        assertTrue(first.stream)
-    }
-
-    @Test
     fun zoomStepsByTenPercentWithinLimits() {
         assertEquals(0.9f, BrowserSources.stepZoom(1f, -1), 1e-4f)
         assertEquals(1.1f, BrowserSources.stepZoom(1f, +1), 1e-4f)

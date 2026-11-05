@@ -16,9 +16,6 @@ object BrowserSources {
     const val ZOOM_MAX = 3f
     const val ZOOM_STEP = 0.1f
 
-    /** 새 소스를 겹치지 않게 조금씩 비켜 놓는 정도 (영상 기준). */
-    private const val CASCADE = 0.04f
-
     /** 칸마다의 설정. 길이는 [WidgetHost.COUNT], 빈 칸은 null. */
     fun slots(settings: OverlaySettings): List<OverlayItem?> =
         List(WidgetHost.COUNT) { index ->
@@ -43,13 +40,6 @@ object BrowserSources {
                 }
             }
         }
-
-    /** [position]번째(0부터) 새 소스의 기본 자리. 앞의 것과 겹치지 않게 오른쪽 아래로 조금씩 비킨다. */
-    fun newSource(position: Int): OverlayItem {
-        val d = OverlaySettings.DEFAULT_SOURCE
-        val shift = CASCADE * position.coerceIn(0, MAX - 1)
-        return d.copy(x = (d.x + shift).coerceAtMost(1f - d.w), y = (d.y + shift).coerceAtMost(1f - d.h))
-    }
 
     /** 내용 배율을 [steps]칸(+면 크게) 바꾼다. 10% 단위로 맞춘다. */
     fun stepZoom(zoom: Float, steps: Int): Float {

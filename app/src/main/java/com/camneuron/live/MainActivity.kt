@@ -65,7 +65,7 @@ import com.camneuron.live.chzzk.LoginActivity
 import com.camneuron.live.rtmp.RtmpUrl
 import com.camneuron.live.widget.BrowserSources
 import com.camneuron.live.widget.WidgetCanvas
-import com.camneuron.live.widget.WidgetDefaults
+import com.camneuron.live.widget.WidgetLayout
 import com.camneuron.live.widget.WidgetFrame
 import com.camneuron.live.widget.WidgetHost
 import com.camneuron.live.widget.WidgetUrls
@@ -100,6 +100,10 @@ class MainActivity : Activity() {
     private lateinit var widgetLayer: FrameLayout
     private lateinit var widgetFrames: List<WidgetFrame>
     private lateinit var widgetDone: View
+    private lateinit var widgetAutoButton: TextView
+
+    /** "자동 배치" 직전의 위젯 설정. 있으면 그 버튼이 "되돌리기"가 된다. 손으로 옮기거나 조정을 끝내면 지운다. */
+    private var beforeAutoLayout: OverlaySettings? = null
     private lateinit var chatUrlInput: EditText
     private lateinit var alertUrlInput: EditText
     private lateinit var chatStreamChip: TextView
@@ -230,7 +234,8 @@ class MainActivity : Activity() {
         keyFrame1 = findViewById(R.id.key_frame_1)
         keyFrame2 = findViewById(R.id.key_frame_2)
         widgetLayer = findViewById(R.id.widget_layer)
-        widgetDone = findViewById(R.id.btn_widget_done)
+        widgetDone = findViewById(R.id.widget_edit_bar)
+        widgetAutoButton = findViewById(R.id.btn_widget_auto)
         chatUrlInput = findViewById(R.id.input_chat_url)
         alertUrlInput = findViewById(R.id.input_alert_url)
         chatStreamChip = findViewById(R.id.chip_chat_stream)
@@ -623,8 +628,12 @@ class MainActivity : Activity() {
                 this, widgetTitle(index, null),
                 onMoved = { x, y, w, h ->
                     OverlayStore.update { BrowserSources.update(it, index) { item -> item.copy(x = x, y = y, w = w, h = h) } }
+                    setBeforeAutoLayout(null)
                 },
-                onZoom = { zoom -> OverlayStore.update { BrowserSources.update(it, index) { item -> item.copy(zoom = zoom) } } },
+                onZoom = { zoom ->
+                    OverlayStore.update { BrowserSources.update(it, index) { item -> item.copy(zoom = zoom) } }
+                    setBeforeAutoLayout(null)
+                },
             )
         }
         widgetFrames.forEach { widgetLayer.addView(it) }
@@ -646,7 +655,8 @@ class MainActivity : Activity() {
         findViewById<View>(R.id.btn_widget_edit).setOnClickListener {
             if (saveSettings()) setEditingWidgets(true)
         }
-        widgetDone.setOnClickListener { setEditingWidgets(false) }
+        findViewById<View>(R.id.btn_widget_done).setOnClickListener { setEditingWidgets(false) }
+        widgetAutoButton.setOnClickListener { autoLayoutWidgets() }
         // 방송 중에도 된다. 옮기거나 배율을 바꾸면 바로 저장되고, 방송 세션이 같은 설정을 보고 송출 화면에도 바로 반영한다.
         findViewById<View>(R.id.btn_widgets).setOnClickListener {
             when {
@@ -658,8 +668,40 @@ class MainActivity : Activity() {
         }
     }
 
+    /** "자동 배치" 또는 (바로 전에 했으면) "되돌리기". */
+    private fun autoLayoutWidgets() {
+        val saved = beforeAutoLayout
+        if (saved != null) {
+            OverlayStore.update { WidgetLayout.restore(it, saved) }
+            setBeforeAutoLayout(null)
+            return
+        }
+        val current = OverlayStore.current
+        val arranged = WidgetLayout.arrange(current)
+        if (arranged == current) {
+            Toast.makeText(this, R.string.toast_widget_auto_same, Toast.LENGTH_SHORT).show()
+            return
+        }
+        OverlayStore.update { WidgetLayout.arrange(it) }
+        setBeforeAutoLayout(current)
+        Toast.makeText(this, R.string.toast_widget_auto, Toast.LENGTH_LONG).show()
+    }
+
+    private fun setBeforeAutoLayout(settings: OverlaySettings?) {
+        beforeAutoLayout = settings
+        widgetAutoButton.setText(if (settings != null) R.string.btn_widget_undo else R.string.btn_widget_auto)
+    }
+
     private fun setEditingWidgets(editing: Boolean) {
+        if (editing != editingWidgets) {
+            // 조정하는 동안에는 버튼·줌 단계를 숨긴다. 그 밑(오른쪽·아래)에 놓인 위젯도 잡을 수 있게.
+            // (바뀔 때만: 방송 설정 창이 열리며 숨긴 것을 여기서 다시 보이게 하지 않도록)
+            val behind = if (editing) View.INVISIBLE else View.VISIBLE
+            findViewById<View>(R.id.controls).visibility = behind
+            zoomBar.visibility = behind
+        }
         editingWidgets = editing
+        setBeforeAutoLayout(null)
         widgetFrames.forEach { it.editable = editing }
         widgetDone.visibility = if (editing) View.VISIBLE else View.GONE
         if (editing) {
@@ -1192,8 +1234,10 @@ class MainActivity : Activity() {
                 requestFocus()
             }
             else -> {
-                val sources = rows.mapIndexed { i, row ->
-                    (row.base ?: BrowserSources.newSource(i)).copy(
+                // 새로 넣은 위젯은 캠 방송에 알맞은 자리에 저절로 놓는다 (사람이 옮겨 둔 것은 그대로).
+                val newSlots = rows.indices.filter { rows[it].base == null }.map { WidgetHost.FIRST_SOURCE + it }.toSet()
+                val sources = rows.map { row ->
+                    (row.base ?: OverlaySettings.DEFAULT_SOURCE).copy(
                         name = row.name.text.toString().trim(),
                         url = row.url.text.toString().trim(),
                         stream = row.stream,
@@ -1203,12 +1247,13 @@ class MainActivity : Activity() {
                 LivePrefs.save(this, server, key)
                 LivePrefs.saveQuality(this, draftQuality)
                 saveChzzkApp()
-                OverlayStore.update {
-                    it.copy(
-                        chat = WidgetDefaults.placeChat(it.chat, chatUrl).copy(url = chatUrl, stream = draftChatStream, visible = true),
-                        alert = it.alert.copy(url = alertUrl, stream = draftAlertStream, visible = true),
+                OverlayStore.update { old ->
+                    val next = old.copy(
+                        chat = old.chat.copy(url = chatUrl, stream = draftChatStream, visible = true),
+                        alert = old.alert.copy(url = alertUrl, stream = draftAlertStream, visible = true),
                         sources = sources,
                     )
+                    WidgetLayout.placeNew(old, next, newSlots)
                 }
                 showSettings(false)
                 return true

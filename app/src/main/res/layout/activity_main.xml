@@ -710,11 +710,24 @@
         </LinearLayout>
     </ScrollView>
 
-    <!-- 위젯 위치 조정 중에만 보인다. 위쪽은 후원 알림 기본 자리라 가운데에 둔다. -->
-    <TextView
-        android:id="@+id/btn_widget_done"
-        style="@style/SideButton"
+    <!-- 위젯 조정 중에만 보인다. 위쪽은 후원 알림, 아래·왼쪽은 다른 위젯의 자동 배치 자리라 가운데에 둔다. -->
+    <LinearLayout
+        android:id="@+id/widget_edit_bar"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
         android:layout_gravity="center"
-        android:text="@string/btn_widget_done"
-        android:visibility="gone" />
+        android:orientation="horizontal"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/btn_widget_auto"
+            style="@style/SideButton"
+            android:text="@string/btn_widget_auto" />
+
+        <TextView
+            android:id="@+id/btn_widget_done"
+            style="@style/SideButton"
+            android:layout_marginStart="12dp"
+            android:text="@string/btn_widget_done" />
+    </LinearLayout>
 </FrameLayout>
