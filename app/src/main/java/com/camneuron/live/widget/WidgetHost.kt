@@ -28,7 +28,7 @@ import com.camneuron.core.overlay.OverlayStore
 import java.util.concurrent.CopyOnWriteArraySet
 
 /**
- * 치지직 채팅창·후원 알림 웹 위젯을 화면 밖에서 띄우고, 바뀔 때마다 그림(Bitmap)으로 떠서 알린다.
+ * 치지직 채팅창·후원 알림·브라우저 소스(투네이션 등) 웹 위젯을 화면 밖에서 띄우고, 바뀔 때마다 그림(Bitmap)으로 떠서 알린다.
  *
  * 위젯은 앱만 쓰는 가상 화면(VirtualDisplay) 위의 [Presentation] 창에 둔다. 액티비티 창이 아니라서 앱을 내려도,
  * 화면을 꺼도 방송 중에는 계속 돈다. 권한도 필요 없다 (앱이 만든 비공개 가상 화면).
@@ -39,10 +39,11 @@ import java.util.concurrent.CopyOnWriteArraySet
  * 모든 함수와 리스너는 메인 스레드에서 돈다.
  */
 object WidgetHost {
-    /** [index] 0 = 채팅창, 1 = 후원 알림. */
+    /** [index] 0 = 채팅창, 1 = 후원 알림, 2부터 브라우저 소스 ([BrowserSources]). */
     const val CHAT = 0
     const val ALERT = 1
-    const val COUNT = 2
+    const val FIRST_SOURCE = 2
+    const val COUNT = FIRST_SOURCE + BrowserSources.MAX
 
     class Frame(val bitmap: Bitmap, val item: OverlayItem)
 
@@ -165,9 +166,9 @@ object WidgetHost {
 
     private fun applySettings(settings: OverlaySettings) {
         val content = root ?: return
-        listOf(settings.chat, settings.alert).forEachIndexed { index, item ->
+        BrowserSources.slots(settings).forEachIndexed { index, item ->
             var slot = slots[index]
-            if (!item.active) {
+            if (item == null || !item.active) {
                 if (slot != null) {
                     slot.destroy()
                     content.removeView(slot.frame)

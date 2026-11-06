@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 방송 준비 카드. 왼쪽 채팅창 위젯 자리 위에 놓이므로, 위젯 글자가 비쳐 섞이지 않게 거의 불투명하게. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="#EB141416" />
+    <corners android:radius="12dp" />
+</shape>

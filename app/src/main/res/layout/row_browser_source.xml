@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 방송 설정의 브라우저 소스 한 줄: 이름 · 삭제 / 주소 / 방송 화면에 넣기. 코드에서 만든다. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginTop="12dp"
+    android:orientation="vertical">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <EditText
+            android:id="@+id/input_source_name"
+            style="@style/PanelInput"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:hint="@string/hint_source_name"
+            android:inputType="text"
+            android:maxLength="30" />
+
+        <TextView
+            android:id="@+id/btn_source_remove"
+            style="@style/ChipSmall"
+            android:layout_marginStart="8dp"
+            android:layout_marginEnd="0dp"
+            android:text="@string/btn_source_remove" />
+    </LinearLayout>
+
+    <EditText
+        android:id="@+id/input_source_url"
+        style="@style/PanelInput"
+        android:hint="@string/hint_widget_url"
+        android:inputType="textUri" />
+
+    <TextView
+        android:id="@+id/chip_source_stream"
+        style="@style/Chip"
+        android:layout_marginTop="6dp"
+        android:text="@string/chip_widget_stream" />
+</LinearLayout>

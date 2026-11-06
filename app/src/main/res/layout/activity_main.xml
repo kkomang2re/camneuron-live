@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    가로 화면. 오른손 엄지가 닿는 오른쪽에 버튼을 모은다.
-    바깥 줄: 방송 설정 · 전면/후면 · 방송 시작/종료. 그 왼쪽 줄: 방송 중에 켜고 끄는 마이크 · 가리기 · 플래시 · 손떨림.
-    아래 가운데: 줌 단계. 미리보기를 누르면 그곳에 초점, 길게 누르면 자동 초점, 두 손가락으로 줌.
+    가로 화면. 방송 화면(16:9)을 왼쪽에 붙이고, 폰 화면이 더 길어 오른쪽에 남는 띠에 버튼을 한 줄로 둔다
+    (버튼이 방송 화면과 위젯을 가리지 않게. 놓는 일은 MainActivity.layoutAroundVideo).
+    버튼 줄: 방송 전에는 설정 · 전환 · 위젯 · 보정, 방송 중에는 마이크 · 가리기 · 채팅. 나머지는 "더보기" 안에 있다.
+    왼쪽 위: 방송 전에는 방송 준비 카드, 방송 중에는 상태 글자. 아래 가운데: 줌 단계.
+    미리보기를 누르면 그곳에 초점, 길게 누르면 자동 초점, 두 손가락으로 줌.
 -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
@@ -14,7 +16,7 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <!-- 채팅창·후원 알림 위젯 (시청자에게 보이는 자리 그대로). 편집 중이 아니면 터치를 받지 않는다. -->
+    <!-- 채팅창·후원 알림·브라우저 소스 위젯 (시청자에게 보이는 자리 그대로). 편집 중이 아니면 터치를 받지 않는다. -->
     <FrameLayout
         android:id="@+id/widget_layer"
         android:layout_width="match_parent"
@@ -58,6 +60,78 @@
         android:paddingBottom="6dp"
         android:textColor="@android:color/white"
         android:textSize="14sp" />
+
+    <!-- 방송 준비 카드: 방송 전에만 보인다. 줄을 누르면 방송 설정의 그 자리가 열린다. 머리를 누르면 접힌다. -->
+    <LinearLayout
+        android:id="@+id/prep_card"
+        android:layout_width="250dp"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|start"
+        android:layout_marginStart="16dp"
+        android:layout_marginTop="16dp"
+        android:background="@drawable/bg_prep_card"
+        android:orientation="vertical"
+        android:paddingStart="12dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="4dp"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:id="@+id/prep_header"
+            android:layout_width="match_parent"
+            android:layout_height="36dp"
+            android:background="?android:attr/selectableItemBackground"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/prep_header_title"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/prep_title"
+                android:textColor="@android:color/white"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/prep_header_toggle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:paddingStart="8dp"
+                android:paddingEnd="4dp"
+                android:text="@string/prep_collapse"
+                android:textColor="#CCFFFFFF"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/prep_rows"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <include
+                android:id="@+id/prep_row_title"
+                layout="@layout/row_prep" />
+
+            <include
+                android:id="@+id/prep_row_category"
+                layout="@layout/row_prep" />
+
+            <include
+                android:id="@+id/prep_row_quality"
+                layout="@layout/row_prep" />
+
+            <include
+                android:id="@+id/prep_row_widgets"
+                layout="@layout/row_prep" />
+
+            <include
+                android:id="@+id/prep_row_check"
+                layout="@layout/row_prep" />
+        </LinearLayout>
+    </LinearLayout>
 
     <!-- 치지직 채팅 (방송하는 사람만 본다). 왼쪽, 줌 버튼 줄 위에서 끝난다. -->
     <LinearLayout
@@ -254,81 +328,111 @@
         android:layout_marginBottom="16dp"
         android:orientation="horizontal" />
 
+    <!--
+        오른쪽 버튼 줄과 그 왼쪽에 펼치는 "더보기". 버튼은 방송 전·중에 따라 MainActivity.arrangeButtons가
+        줄과 더보기 사이로 옮긴다 (여기 순서는 방송 전). 오른쪽 여백은 줄이 빈 띠 가운데에 오도록 코드에서 정한다.
+    -->
     <LinearLayout
         android:id="@+id/controls"
         android:layout_width="wrap_content"
         android:layout_height="match_parent"
         android:layout_gravity="end"
-        android:layout_marginEnd="20dp"
         android:gravity="center_vertical"
         android:orientation="horizontal">
 
         <LinearLayout
+            android:id="@+id/more_panel"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginEnd="14dp"
+            android:layout_marginEnd="10dp"
+            android:background="@drawable/bg_panel"
             android:gravity="center_horizontal"
-            android:orientation="vertical">
+            android:orientation="vertical"
+            android:paddingStart="6dp"
+            android:paddingTop="6dp"
+            android:paddingEnd="6dp"
+            android:paddingBottom="1dp"
+            android:visibility="gone">
 
             <TextView
                 android:id="@+id/btn_chat"
-                style="@style/QuickButton"
-                android:layout_marginTop="0dp"
-                android:text="@string/btn_chat" />
-
-            <TextView
-                android:id="@+id/btn_adjust"
-                style="@style/QuickButton"
-                android:text="@string/btn_adjust" />
+                style="@style/RailButton"
+                android:drawableTop="@drawable/ic_rail_chat"
+                android:text="@string/rail_chat" />
 
             <TextView
                 android:id="@+id/btn_mic"
-                style="@style/QuickButton"
-                android:text="@string/btn_mic_mute" />
+                style="@style/RailButton"
+                android:drawableTop="@drawable/ic_rail_mic"
+                android:text="@string/rail_mic" />
 
             <TextView
                 android:id="@+id/btn_cover"
-                style="@style/QuickButton"
-                android:text="@string/btn_cover" />
+                style="@style/RailButton"
+                android:drawableTop="@drawable/ic_rail_cover"
+                android:text="@string/rail_cover" />
 
             <TextView
                 android:id="@+id/btn_torch"
-                style="@style/QuickButton"
-                android:text="@string/btn_torch" />
+                style="@style/RailButton"
+                android:drawableTop="@drawable/ic_rail_torch"
+                android:text="@string/rail_torch" />
 
             <TextView
                 android:id="@+id/btn_stabilization"
-                style="@style/QuickButton"
-                android:text="@string/btn_stabilization" />
+                style="@style/RailButton"
+                android:drawableTop="@drawable/ic_rail_stabilization"
+                android:text="@string/rail_stabilization" />
         </LinearLayout>
 
         <LinearLayout
-            android:layout_width="wrap_content"
+            android:id="@+id/rail"
+            android:layout_width="@dimen/rail_width"
             android:layout_height="wrap_content"
             android:gravity="center_horizontal"
             android:orientation="vertical">
 
             <TextView
                 android:id="@+id/btn_settings"
-                style="@style/SideButton"
-                android:text="@string/btn_settings" />
+                style="@style/RailButton"
+                android:drawableTop="@drawable/ic_rail_settings"
+                android:text="@string/rail_settings" />
 
             <TextView
                 android:id="@+id/btn_flip"
-                style="@style/SideButton"
-                android:layout_marginTop="16dp"
-                android:text="@string/btn_flip" />
+                style="@style/RailButton"
+                android:drawableTop="@drawable/ic_rail_flip"
+                android:text="@string/rail_flip" />
+
+            <!-- 위젯 위치·크기 조정. 방송 중에도 된다 (방송 중에는 "더보기" 안). -->
+            <TextView
+                android:id="@+id/btn_widgets"
+                style="@style/RailButton"
+                android:drawableTop="@drawable/ic_rail_widgets"
+                android:text="@string/rail_widgets" />
+
+            <TextView
+                android:id="@+id/btn_adjust"
+                style="@style/RailButton"
+                android:drawableTop="@drawable/ic_rail_adjust"
+                android:text="@string/rail_adjust" />
+
+            <TextView
+                android:id="@+id/btn_more"
+                style="@style/RailButton"
+                android:drawableTop="@drawable/ic_rail_more"
+                android:text="@string/rail_more" />
 
             <TextView
                 android:id="@+id/btn_live"
-                android:layout_width="96dp"
-                android:layout_height="96dp"
-                android:layout_marginTop="24dp"
+                android:layout_width="@dimen/rail_width"
+                android:layout_height="@dimen/rail_width"
+                android:layout_marginTop="4dp"
                 android:background="@drawable/bg_live_button"
                 android:gravity="center"
                 android:text="@string/btn_start"
                 android:textColor="@android:color/white"
-                android:textSize="16sp"
+                android:textSize="15sp"
                 android:textStyle="bold" />
         </LinearLayout>
     </LinearLayout>
@@ -351,6 +455,7 @@
             android:padding="20dp">
 
             <TextView
+                android:id="@+id/section_server"
                 style="@style/PanelLabel"
                 android:text="@string/label_server" />
 
@@ -377,6 +482,7 @@
                 android:textSize="12sp" />
 
             <TextView
+                android:id="@+id/section_chzzk"
                 style="@style/PanelLabel"
                 android:layout_marginTop="20dp"
                 android:text="@string/label_chzzk" />
@@ -563,6 +669,7 @@
             </LinearLayout>
 
             <TextView
+                android:id="@+id/section_quality"
                 style="@style/PanelLabel"
                 android:layout_marginTop="16dp"
                 android:text="@string/label_quality" />
@@ -614,6 +721,7 @@
                 android:textSize="12sp" />
 
             <TextView
+                android:id="@+id/section_widgets"
                 style="@style/PanelLabel"
                 android:layout_marginTop="20dp"
                 android:text="@string/label_widgets" />
@@ -653,6 +761,24 @@
                 android:text="@string/chip_widget_stream" />
 
             <TextView
+                style="@style/PanelLabel"
+                android:layout_marginTop="16dp"
+                android:text="@string/label_sources" />
+
+            <!-- 브라우저 소스 줄 (row_browser_source)을 코드에서 넣는다. -->
+            <LinearLayout
+                android:id="@+id/sources_list"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical" />
+
+            <TextView
+                android:id="@+id/btn_add_source"
+                style="@style/Chip"
+                android:layout_marginTop="10dp"
+                android:text="@string/btn_add_source" />
+
+            <TextView
                 android:id="@+id/btn_widget_edit"
                 style="@style/SideButton"
                 android:layout_marginTop="12dp"
@@ -685,11 +811,24 @@
         </LinearLayout>
     </ScrollView>
 
-    <!-- 위젯 위치 조정 중에만 보인다. 위쪽은 후원 알림 기본 자리라 가운데에 둔다. -->
-    <TextView
-        android:id="@+id/btn_widget_done"
-        style="@style/SideButton"
+    <!-- 위젯 조정 중에만 보인다. 위쪽은 후원 알림, 아래·왼쪽은 다른 위젯의 자동 배치 자리라 가운데에 둔다. -->
+    <LinearLayout
+        android:id="@+id/widget_edit_bar"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
         android:layout_gravity="center"
-        android:text="@string/btn_widget_done"
-        android:visibility="gone" />
+        android:orientation="horizontal"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/btn_widget_auto"
+            style="@style/SideButton"
+            android:text="@string/btn_widget_auto" />
+
+        <TextView
+            android:id="@+id/btn_widget_done"
+            style="@style/SideButton"
+            android:layout_marginStart="12dp"
+            android:text="@string/btn_widget_done" />
+    </LinearLayout>
 </FrameLayout>

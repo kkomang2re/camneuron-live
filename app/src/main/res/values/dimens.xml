@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 오른쪽 버튼 줄의 폭 (버튼 폭, 방송 시작 버튼 지름과 같다). 영상 오른쪽 빈 띠가 이보다 좁으면 줄이 영상 위에 겹친다.
+         Galaxy S25 Ultra (가로, 오른쪽 3버튼 내비게이션 바)에서 빈 띠가 67dp라 그 안에 들어가게 64dp. -->
+    <dimen name="rail_width">64dp</dimen>
+</resources>
