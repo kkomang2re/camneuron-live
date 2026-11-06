@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 오른쪽 버튼 줄 아이콘. 색은 버튼의 drawableTint(@color/chip_text)를 따른다. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M11 6Q11.9 12.1 18 13Q11.9 13.9 11 20Q10.1 13.9 4 13Q10.1 12.1 11 6Z"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="1.8" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M18 2.5Q18.4 5.6 21.5 6Q18.4 6.4 18 9.5Q17.6 6.4 14.5 6Q17.6 5.6 18 2.5Z"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="1.8" />
+</vector>

@@ -36,16 +36,20 @@
         <item name="android:importantForAutofill">no</item>
     </style>
 
-    <!-- 방송 중에 켜고 끄는 작은 버튼 (마이크, 가리기, 플래시, 손떨림) -->
-    <style name="QuickButton">
-        <item name="android:layout_width">72dp</item>
+    <!-- 오른쪽 버튼 줄과 "더보기"의 버튼: 아이콘 위, 짧은 이름 아래. 켜진 것(activated)은 노란 바탕에 검은 아이콘·글자. -->
+    <style name="RailButton">
+        <item name="android:layout_width">64dp</item>
         <item name="android:layout_height">48dp</item>
-        <item name="android:layout_marginTop">8dp</item>
+        <item name="android:layout_marginBottom">5dp</item>
         <item name="android:gravity">center</item>
+        <item name="android:paddingTop">4dp</item>
+        <item name="android:paddingBottom">2dp</item>
+        <item name="android:drawablePadding">0dp</item>
+        <item name="android:drawableTint">@color/chip_text</item>
         <item name="android:background">@drawable/bg_chip</item>
         <item name="android:textColor">@color/chip_text</item>
-        <item name="android:textSize">12sp</item>
-        <item name="android:lineSpacingMultiplier">0.9</item>
+        <item name="android:textSize">11sp</item>
+        <item name="android:maxLines">1</item>
         <item name="android:clickable">true</item>
         <item name="android:focusable">true</item>
     </style>

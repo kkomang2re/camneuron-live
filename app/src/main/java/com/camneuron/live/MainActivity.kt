@@ -29,6 +29,7 @@ import android.view.Surface
 import android.view.TextureView
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
@@ -59,6 +60,7 @@ import com.camneuron.live.chzzk.ChzzkChatSettings
 import com.camneuron.live.chzzk.ChzzkCredentials
 import com.camneuron.live.chzzk.ChzzkDiagnose
 import com.camneuron.live.chzzk.ChzzkEvent
+import com.camneuron.live.chzzk.ChzzkLiveSetting
 import com.camneuron.live.chzzk.ChzzkPrefs
 import com.camneuron.live.chzzk.ChzzkTags
 import com.camneuron.live.chzzk.LoginActivity
@@ -72,8 +74,9 @@ import com.camneuron.live.widget.WidgetUrls
 import kotlin.math.min
 
 /**
- * 한 화면: 카메라 미리보기, 오른쪽에 방송 설정·카메라 전환·방송 시작/종료 버튼과 마이크·가리기·플래시·손떨림 버튼,
- * 아래에 줌 단계. 미리보기를 누르면 그곳에 초점·노출을 맞추고, 길게 누르면 자동 초점으로 돌아가며, 두 손가락으로 줌.
+ * 한 화면: 카메라 미리보기(방송 화면 16:9를 왼쪽에 붙인다), 그 오른쪽 빈 띠에 버튼 한 줄과 "더보기",
+ * 왼쪽 위에 방송 준비 카드(방송 전) 또는 상태 글자(방송 중), 아래에 줌 단계.
+ * 미리보기를 누르면 그곳에 초점·노출을 맞추고, 길게 누르면 자동 초점으로 돌아가며, 두 손가락으로 줌.
  * 방송은 [LiveService]가 하므로 이 화면을 닫아도 계속된다.
  */
 class MainActivity : Activity() {
@@ -101,6 +104,48 @@ class MainActivity : Activity() {
     private lateinit var widgetFrames: List<WidgetFrame>
     private lateinit var widgetDone: View
     private lateinit var widgetAutoButton: TextView
+
+    // 오른쪽 버튼 줄과 "더보기"
+    private lateinit var controlsView: View
+    private lateinit var rail: LinearLayout
+    private lateinit var morePanel: LinearLayout
+    private lateinit var moreButton: TextView
+    private lateinit var flipButton: TextView
+    private lateinit var widgetsButton: TextView
+
+    /** 버튼이 지금 방송 중 자리에 놓였는지. null이면 아직 놓지 않았다 ([arrangeButtons]). */
+    private var buttonsLive: Boolean? = null
+
+    /** 영상 오른쪽 빈 띠에 버튼 줄이 들어가는지. 안 들어가는 화면비면 줄이 영상 위에 겹친다 (위젯 조정 중에는 숨긴다). */
+    private var railFits = true
+
+    /** 시스템 바·카메라 구멍 (px). 영상과 버튼을 그 안쪽에 둔다. */
+    private var insetLeft = 0
+    private var insetTop = 0
+    private var insetRight = 0
+    private var insetBottom = 0
+
+    // 방송 준비 카드 (방송 전, 왼쪽 위)
+    private class PrepRow(val view: View) {
+        val label: TextView = view.findViewById(R.id.prep_label)
+        val value: TextView = view.findViewById(R.id.prep_value)
+        val arrow: View = view.findViewById(R.id.prep_arrow)
+    }
+    private lateinit var prepCard: View
+    private lateinit var prepHeaderTitle: TextView
+    private lateinit var prepHeaderToggle: TextView
+    private lateinit var prepRows: View
+    private lateinit var prepTitle: PrepRow
+    private lateinit var prepCategory: PrepRow
+    private lateinit var prepQuality: PrepRow
+    private lateinit var prepWidgets: PrepRow
+    private lateinit var prepCheck: PrepRow
+    private var prepCollapsed = false
+
+    /** 카드에 보이는 치지직 방송 제목·카테고리. 로그인했을 때 불러온다 ([refreshPrepLiveInfo]). */
+    private var prepLiveSetting: ChzzkLiveSetting? = null
+    private var prepLiveLoading = false
+    private var prepLiveFailed = false
 
     /** "자동 배치" 직전의 위젯 설정. 있으면 그 버튼이 "되돌리기"가 된다. 손으로 옮기거나 조정을 끝내면 지운다. */
     private var beforeAutoLayout: OverlaySettings? = null
@@ -272,6 +317,21 @@ class MainActivity : Activity() {
         evSeek = findViewById(R.id.seek_ev)
         wbChips = findViewById(R.id.wb_chips)
         lockChip = findViewById(R.id.chip_lock)
+        controlsView = findViewById(R.id.controls)
+        rail = findViewById(R.id.rail)
+        morePanel = findViewById(R.id.more_panel)
+        moreButton = findViewById(R.id.btn_more)
+        flipButton = findViewById(R.id.btn_flip)
+        widgetsButton = findViewById(R.id.btn_widgets)
+        prepCard = findViewById(R.id.prep_card)
+        prepHeaderTitle = findViewById(R.id.prep_header_title)
+        prepHeaderToggle = findViewById(R.id.prep_header_toggle)
+        prepRows = findViewById(R.id.prep_rows)
+        prepTitle = PrepRow(findViewById(R.id.prep_row_title))
+        prepCategory = PrepRow(findViewById(R.id.prep_row_category))
+        prepQuality = PrepRow(findViewById(R.id.prep_row_quality))
+        prepWidgets = PrepRow(findViewById(R.id.prep_row_widgets))
+        prepCheck = PrepRow(findViewById(R.id.prep_row_check))
         BeautyStore.init(this)
 
         preview.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
@@ -294,10 +354,15 @@ class MainActivity : Activity() {
 
         liveButton.setOnClickListener { toggleLive() }
         settingsButton.setOnClickListener { showSettings(true) }
-        findViewById<View>(R.id.btn_flip).setOnClickListener { engine.requestFacing(!engine.controls.front) }
+        flipButton.setOnClickListener {
+            showMore(false)
+            engine.requestFacing(!engine.controls.front)
+        }
+        moreButton.setOnClickListener { showMore(morePanel.visibility != View.VISIBLE) }
         findViewById<View>(R.id.btn_save).setOnClickListener { saveSettings() }
         findViewById<View>(R.id.btn_cancel).setOnClickListener { showSettings(false) }
         setUpQuickButtons()
+        setUpPrepCard()
         setUpQualityControls()
         setUpWidgets()
         setUpChzzk()
@@ -322,6 +387,7 @@ class MainActivity : Activity() {
     /** 열린 창이 있으면 그것부터 닫고, 없으면 종료할지 묻는다. */
     private fun handleBack() {
         when {
+            morePanel.visibility == View.VISIBLE -> showMore(false)
             settingsPanel.visibility == View.VISIBLE -> showSettings(false)
             editingWidgets -> setEditingWidgets(false)
             chatPanel.visibility == View.VISIBLE || adjustPanel.visibility == View.VISIBLE -> {
@@ -374,13 +440,16 @@ class MainActivity : Activity() {
 
     /**
      * Android 15부터 앱이 화면 끝까지 그려져 가로 화면에서 내비게이션 바가 버튼을 가린다.
-     * 미리보기는 끝까지 두고, 버튼·줌 단계·상태 글자만 시스템 바·카메라 구멍을 피해 안쪽으로 민다.
+     * 미리보기 뷰는 끝까지 두고, 영상은 카메라 구멍 안쪽부터 그리며([displayedImageRect]),
+     * 버튼·줌 단계·상태 글자·준비 카드는 시스템 바·카메라 구멍을 피해 안쪽으로 민다.
      */
     private fun avoidSystemBars() {
-        val controls = findViewById<View>(R.id.controls)
         val statusMargins = status.layoutParams as ViewGroup.MarginLayoutParams
         val baseStart = statusMargins.leftMargin
         val baseTop = statusMargins.topMargin
+        val cardMargins = prepCard.layoutParams as ViewGroup.MarginLayoutParams
+        val baseCardStart = cardMargins.leftMargin
+        val baseCardTop = cardMargins.topMargin
         val zoomMargins = zoomBar.layoutParams as ViewGroup.MarginLayoutParams
         val baseZoomBottom = zoomMargins.bottomMargin
         val bannerMargins = coverBanner.layoutParams as ViewGroup.MarginLayoutParams
@@ -406,17 +475,46 @@ class MainActivity : Activity() {
                 @Suppress("DEPRECATION")
                 bottom = insets.systemWindowInsetBottom
             }
-            controls.setPadding(controls.paddingLeft, top, right, bottom)
+            insetLeft = left
+            insetTop = top
+            insetRight = right
+            insetBottom = bottom
             statusMargins.leftMargin = baseStart + left
             statusMargins.topMargin = baseTop + top
             status.layoutParams = statusMargins
+            cardMargins.leftMargin = baseCardStart + left
+            cardMargins.topMargin = baseCardTop + top
+            prepCard.layoutParams = cardMargins
             zoomMargins.bottomMargin = baseZoomBottom + bottom
             zoomBar.layoutParams = zoomMargins
             bannerMargins.bottomMargin = baseBannerBottom + bottom
             coverBanner.layoutParams = bannerMargins
+            applyPreviewTransform()
+            layoutAroundVideo()
             view.onApplyWindowInsets(insets)
         }
     }
+
+    /**
+     * 영상 자리에 맞춰 나머지를 놓는다. 버튼 줄은 영상 오른쪽 빈 띠의 가운데에 (띠가 좁으면 오른쪽 끝에 겹쳐),
+     * 줌 단계·가림 알림·위젯 조정 막대는 영상 가운데 아래에.
+     */
+    private fun layoutAroundVideo() {
+        val railWidth = resources.getDimensionPixelSize(R.dimen.rail_width)
+        val image = displayedImageRect()
+        val screenWidth = preview.width.toFloat()
+        val strip = if (image != null) screenWidth - image.right - insetRight else 0f
+        val side = ((strip - railWidth) / 2).toInt()
+        railFits = image != null && side >= 0
+        // 들어가면 띠 가운데 (여백이 몇 px뿐이어도), 안 들어가면 오른쪽 끝에서 조금 띄운다.
+        controlsView.setPadding(controlsView.paddingLeft, insetTop, insetRight + if (railFits) side else dp(12), insetBottom)
+        val dx = if (image != null) image.centerX() - screenWidth / 2 else 0f
+        zoomBar.translationX = dx
+        coverBanner.translationX = dx
+        widgetDone.translationX = dx
+    }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     override fun onStart() {
         super.onStart()
@@ -440,6 +538,7 @@ class MainActivity : Activity() {
         ChzzkChat.addListener(chatListener)
         shownTotal = -1 // 채팅 줄을 처음부터 다시 그린다
         renderChat()
+        if (LiveState.current.phase == LiveState.Phase.IDLE) refreshPrepLiveInfo()
         // 이미 열려 있으면 다시 채우지 않는다 (다른 앱에서 값을 복사해 오는 동안 입력한 것이 지워지지 않게).
         if (LivePrefs.streamKey(this).isEmpty() && LiveState.current.phase == LiveState.Phase.IDLE &&
             settingsPanel.visibility != View.VISIBLE
@@ -471,6 +570,7 @@ class MainActivity : Activity() {
             ChzzkChat.restart()
             // 로그인하면서 받은 스트림 키를 칸에 보인다.
             if (settingsPanel.visibility == View.VISIBLE) keyInput.setText(LivePrefs.streamKey(this))
+            refreshPrepLiveInfo()
         }
         renderChzzkSettings()
     }
@@ -562,6 +662,11 @@ class MainActivity : Activity() {
         })
         val gestures = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onSingleTapUp(e: MotionEvent): Boolean {
+                // 더보기가 열려 있으면 밖을 누른 것으로 보고 닫기만 한다.
+                if (morePanel.visibility == View.VISIBLE) {
+                    showMore(false)
+                    return true
+                }
                 if (settingsPanel.visibility == View.VISIBLE || editingWidgets) return true
                 focusAtView(e.x, e.y)
                 return true
@@ -597,7 +702,10 @@ class MainActivity : Activity() {
         main.postDelayed(hideFocusRing, FOCUS_RING_MS)
     }
 
-    /** 미리보기 안에서 영상이 그려진 곳. [applyPreviewTransform]처럼 화면비를 지켜 가운데에 맞춘다. */
+    /**
+     * 미리보기 안에서 영상이 그려진 곳 ([applyPreviewTransform]과 같은 자리). 화면비를 지키며, 폰 화면이 영상보다
+     * 길면 왼쪽(카메라 구멍 안쪽)에 붙여 오른쪽에 버튼 줄이 들어갈 빈 띠를 남긴다. 위아래가 남으면 가운데.
+     */
     private fun displayedImageRect(): RectF? {
         val size = engine.previewSize ?: return null
         val viewWidth = preview.width.toFloat()
@@ -613,7 +721,7 @@ class MainActivity : Activity() {
             w = viewWidth
             h = viewWidth / aspect
         }
-        val left = (viewWidth - w) / 2
+        val left = min(insetLeft.toFloat(), viewWidth - w).coerceAtLeast(0f)
         val top = (viewHeight - h) / 2
         return RectF(left, top, left + w, top + h)
     }
@@ -658,7 +766,8 @@ class MainActivity : Activity() {
         findViewById<View>(R.id.btn_widget_done).setOnClickListener { setEditingWidgets(false) }
         widgetAutoButton.setOnClickListener { autoLayoutWidgets() }
         // 방송 중에도 된다. 옮기거나 배율을 바꾸면 바로 저장되고, 방송 세션이 같은 설정을 보고 송출 화면에도 바로 반영한다.
-        findViewById<View>(R.id.btn_widgets).setOnClickListener {
+        widgetsButton.setOnClickListener {
+            showMore(false)
             when {
                 editingWidgets -> setEditingWidgets(false)
                 BrowserSources.slots(OverlayStore.current).none { it?.active == true } ->
@@ -694,24 +803,27 @@ class MainActivity : Activity() {
 
     private fun setEditingWidgets(editing: Boolean) {
         if (editing != editingWidgets) {
-            // 조정하는 동안에는 버튼·줌 단계를 숨긴다. 그 밑(오른쪽·아래)에 놓인 위젯도 잡을 수 있게.
+            // 조정하는 동안에는 줌 단계를 숨긴다 (그 밑에 놓인 위젯도 잡을 수 있게). 버튼 줄은 영상 밖 빈 띠에 있으면
+            // 그대로 두어 방송 중에도 마이크·가리기를 누를 수 있게 하고, 영상 위에 겹치는 화면에서만 숨긴다.
             // (바뀔 때만: 방송 설정 창이 열리며 숨긴 것을 여기서 다시 보이게 하지 않도록)
-            val behind = if (editing) View.INVISIBLE else View.VISIBLE
-            findViewById<View>(R.id.controls).visibility = behind
-            zoomBar.visibility = behind
+            controlsView.visibility = if (editing && !railFits) View.INVISIBLE else View.VISIBLE
+            zoomBar.visibility = if (editing) View.INVISIBLE else View.VISIBLE
         }
         editingWidgets = editing
         setBeforeAutoLayout(null)
         widgetFrames.forEach { it.editable = editing }
         widgetDone.visibility = if (editing) View.VISIBLE else View.GONE
+        widgetsButton.isActivated = editing
         if (editing) {
             // 채팅·보정 창이 왼쪽 위젯(채팅창 기본 자리)을 가리지 않게 닫는다.
             chatPanel.visibility = View.GONE
             adjustPanel.visibility = View.GONE
             chatButton.isActivated = false
             adjustButton.isActivated = false
+            showMore(false)
             Toast.makeText(this, R.string.toast_widget_edit, Toast.LENGTH_LONG).show()
         }
+        render(LiveState.current)
     }
 
     /** 위젯 자리를 미리보기 속 영상 위치에 맞춘다. */
@@ -788,6 +900,7 @@ class MainActivity : Activity() {
                 Toast.makeText(this, R.string.chzzk_logged_out, Toast.LENGTH_SHORT).show()
                 ChzzkChat.restart()
                 renderChzzkSettings()
+                refreshPrepLiveInfo()
             }
         }
         // 로그인 없이 Client ID/Secret만으로 부르는 API(카테고리 검색)로 앱 정보가 맞는지 따로 확인한다.
@@ -863,6 +976,8 @@ class MainActivity : Activity() {
     private fun loadLiveInfo() {
         ChzzkAccount.run(this, { it.liveSetting() }) { result ->
             result.onSuccess { setting ->
+                prepLiveSetting = setting
+                prepLiveFailed = false
                 titleInput.setText(setting.title)
                 tagsInput.setText(ChzzkTags.format(setting.tags))
                 draftCategory = setting.category ?: ChzzkApi.NO_CATEGORY
@@ -903,8 +1018,10 @@ class MainActivity : Activity() {
         val tags = ChzzkTags.parse(tagsInput.text.toString())
         tagsInput.setText(ChzzkTags.format(tags))
         ChzzkAccount.run(this, { it.updateLiveSetting(title, category, tags) }) { result ->
-            result.onSuccess { Toast.makeText(this, R.string.toast_live_info_saved, Toast.LENGTH_SHORT).show() }
-                .onFailure { showError(it) }
+            result.onSuccess {
+                Toast.makeText(this, R.string.toast_live_info_saved, Toast.LENGTH_SHORT).show()
+                refreshPrepLiveInfo()
+            }.onFailure { showError(it) }
         }
     }
 
@@ -920,7 +1037,9 @@ class MainActivity : Activity() {
 
     private fun setUpAdjust() {
         adjustButton.setOnClickListener {
+            showMore(false)
             val show = adjustPanel.visibility != View.VISIBLE
+            if (show && editingWidgets) setEditingWidgets(false)
             adjustPanel.visibility = if (show) View.VISIBLE else View.GONE
             if (show) {
                 chatPanel.visibility = View.GONE
@@ -996,7 +1115,9 @@ class MainActivity : Activity() {
 
     private fun setUpChat() {
         chatButton.setOnClickListener {
+            showMore(false)
             val show = chatPanel.visibility != View.VISIBLE
+            if (show && editingWidgets) setEditingWidgets(false)
             chatPanel.visibility = if (show) View.VISIBLE else View.GONE
             if (show) adjustPanel.visibility = View.GONE
             if (show) {
@@ -1179,10 +1300,11 @@ class MainActivity : Activity() {
     /** 설정 창을 열면 그 뒤의 버튼·줌·위젯을 숨긴다 (가로 화면에서 겹쳐 보이지 않게). */
     private fun showSettings(show: Boolean) {
         val behind = if (show) View.INVISIBLE else View.VISIBLE
-        findViewById<View>(R.id.controls).visibility = behind
+        controlsView.visibility = behind
         zoomBar.visibility = behind
         widgetLayer.visibility = behind
         if (show) {
+            showMore(false)
             chatPanel.visibility = View.GONE
             adjustPanel.visibility = View.GONE
         }
@@ -1210,6 +1332,27 @@ class MainActivity : Activity() {
             settingsPanel.visibility = View.GONE
             getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(settingsPanel.windowToken, 0)
         }
+        render(LiveState.current)
+    }
+
+    /** 방송 설정을 열고 [target] (그 부분의 이름 줄)이 위에 오게 내린다. 준비 카드의 줄을 눌렀을 때. */
+    private fun openSettingsAt(target: View) {
+        showSettings(true)
+        val scroll = settingsPanel as ScrollView
+        // 막 보이게 한 창은 아직 자리가 없으니, 자리가 잡힌 뒤(그리기 직전)에 내린다.
+        scroll.viewTreeObserver.addOnPreDrawListener(object : ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                scroll.viewTreeObserver.removeOnPreDrawListener(this)
+                var y = 0
+                var view: View = target
+                while (view !== scroll) {
+                    y += view.top
+                    view = view.parent as? View ?: return true
+                }
+                scroll.scrollTo(0, (y - dp(8)).coerceAtLeast(0))
+                return true
+            }
+        })
     }
 
     /** 저장하고 닫는다. 잘못된 값이 있으면 그 칸에 표시하고 false. */
@@ -1267,6 +1410,7 @@ class MainActivity : Activity() {
 
     private fun render(s: LiveState.Status) {
         val idle = s.phase == LiveState.Phase.IDLE
+        arrangeButtons(live = !idle)
         liveButton.isActivated = !idle
         liveButton.setText(if (idle) R.string.btn_start else R.string.btn_stop_short)
         settingsButton.isEnabled = idle
@@ -1297,14 +1441,189 @@ class MainActivity : Activity() {
         val device = DeviceStatus.read(this)
         if (device.batteryPercent >= 0) lines += getString(R.string.status_battery, device.batteryPercent, device.temperatureC)
         status.text = lines.joinToString("\n")
+        // 방송 전에는 준비 카드가 같은 자리에서 같은 것(실패 이유, 네트워크, 배터리)을 보인다.
+        status.visibility = if (idle) View.GONE else View.VISIBLE
 
-        micButton.isActivated = LiveControls.micMuted
-        micButton.setText(if (LiveControls.micMuted) R.string.btn_mic_unmute else R.string.btn_mic_mute)
+        val muted = LiveControls.micMuted
+        micButton.isActivated = muted
+        micButton.setText(if (muted) R.string.rail_mic_muted else R.string.rail_mic)
+        setRailIcon(micButton, if (muted) R.drawable.ic_rail_mic_off else R.drawable.ic_rail_mic)
         coverButton.isActivated = LiveControls.covered
-        coverButton.setText(if (LiveControls.covered) R.string.btn_uncover else R.string.btn_cover)
+        coverButton.setText(if (LiveControls.covered) R.string.rail_covered else R.string.rail_cover)
         coverBanner.visibility = if (LiveControls.covered) View.VISIBLE else View.GONE
         chatButton.isActivated = chatPanel.visibility == View.VISIBLE
         adjustButton.isActivated = adjustPanel.visibility == View.VISIBLE
+        renderPrepCard(s)
+    }
+
+    /** 버튼 줄 아이콘을 바꾼다 (같으면 그대로: 1초마다 불린다). 색은 버튼의 drawableTint를 따른다. */
+    private fun setRailIcon(button: TextView, icon: Int) {
+        if (button.getTag(R.id.btn_mic) == icon) return
+        button.setTag(R.id.btn_mic, icon)
+        button.setCompoundDrawablesRelativeWithIntrinsicBounds(0, icon, 0, 0)
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // 오른쪽 버튼 줄과 "더보기"
+
+    /**
+     * 방송 전에는 준비에 쓰는 버튼(설정·전환·위젯·보정)을, 방송 중에는 자주 누르는 버튼(마이크·가리기·채팅)을 줄에 두고
+     * 나머지는 "더보기" 안에 넣는다. 같은 버튼 뷰를 옮기므로 누를 때 하는 일과 켜짐 표시는 한 곳에서 관리된다.
+     * 방송 설정은 방송 중에 바꿀 수 없어 방송 중에는 어디에도 두지 않는다.
+     */
+    private fun arrangeButtons(live: Boolean) {
+        if (buttonsLive == live) return
+        buttonsLive = live
+        val inRail = if (live) {
+            listOf(micButton, coverButton, chatButton)
+        } else {
+            listOf(settingsButton, flipButton, widgetsButton, adjustButton)
+        }
+        val inMore = if (live) {
+            listOf(flipButton, widgetsButton, adjustButton, torchButton, stabilizationButton)
+        } else {
+            listOf(chatButton, micButton, coverButton, torchButton, stabilizationButton)
+        }
+        val all = listOf(
+            settingsButton, flipButton, widgetsButton, adjustButton, micButton, coverButton, chatButton,
+            torchButton, stabilizationButton, moreButton, liveButton,
+        )
+        all.forEach { (it.parent as? ViewGroup)?.removeView(it) }
+        inRail.forEach { rail.addView(it) }
+        rail.addView(moreButton)
+        rail.addView(liveButton)
+        inMore.forEach { morePanel.addView(it) }
+        showMore(false)
+    }
+
+    private fun showMore(show: Boolean) {
+        morePanel.visibility = if (show) View.VISIBLE else View.GONE
+        moreButton.isActivated = show
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // 방송 준비 카드
+
+    private fun setUpPrepCard() {
+        prepTitle.label.setText(R.string.prep_label_title)
+        prepCategory.label.setText(R.string.prep_label_category)
+        prepQuality.label.setText(R.string.prep_label_quality)
+        prepWidgets.label.setText(R.string.prep_label_widgets)
+        prepCheck.label.setText(R.string.prep_label_check)
+        findViewById<View>(R.id.prep_header).setOnClickListener {
+            prepCollapsed = !prepCollapsed
+            render(LiveState.current)
+        }
+        val openLiveInfo = View.OnClickListener {
+            if (ChzzkPrefs.loggedIn(this)) {
+                openSettingsAt(liveInfoSection)
+                loadLiveInfo()
+            } else {
+                openSettingsAt(findViewById(R.id.section_chzzk))
+            }
+        }
+        prepTitle.view.setOnClickListener(openLiveInfo)
+        prepCategory.view.setOnClickListener(openLiveInfo)
+        prepQuality.view.setOnClickListener { openSettingsAt(findViewById(R.id.section_quality)) }
+        prepWidgets.view.setOnClickListener { openSettingsAt(findViewById(R.id.section_widgets)) }
+        prepCheck.view.setOnClickListener {
+            if (!streamTargetSet()) openSettingsAt(findViewById(R.id.section_server))
+        }
+    }
+
+    private fun streamTargetSet(): Boolean =
+        RtmpUrl.parse(LivePrefs.serverUrl(this)) != null && LivePrefs.streamKey(this).isNotEmpty()
+
+    /** 치지직에 로그인했으면 방송 제목·카테고리를 불러와 카드에 보인다. 로그인하지 않았으면 지운다. */
+    private fun refreshPrepLiveInfo() {
+        if (!ChzzkPrefs.loggedIn(this)) {
+            prepLiveSetting = null
+            prepLiveFailed = false
+            render(LiveState.current)
+            return
+        }
+        if (prepLiveLoading) return
+        prepLiveLoading = true
+        ChzzkAccount.run(this, { it.liveSetting() }) { result ->
+            prepLiveLoading = false
+            result.onSuccess {
+                prepLiveSetting = it
+                prepLiveFailed = false
+            }.onFailure { prepLiveFailed = true }
+            render(LiveState.current)
+        }
+    }
+
+    /**
+     * 방송 전에 한눈에 볼 것: 치지직 제목·카테고리, 화질, 켜진 위젯 수, 점검(네트워크·배터리·온도·스트림 키).
+     * 문제가 있으면 머리에 "확인 필요"를 붙이고 점검 줄에 노랗게 적는다. 1초마다 [render]에서 불린다.
+     */
+    private fun renderPrepCard(s: LiveState.Status) {
+        val show = s.phase == LiveState.Phase.IDLE && settingsPanel.visibility != View.VISIBLE && !editingWidgets &&
+            chatPanel.visibility != View.VISIBLE && adjustPanel.visibility != View.VISIBLE
+        prepCard.visibility = if (show) View.VISIBLE else View.GONE
+        if (!show) return
+
+        val network = NetworkLabel.current(this)
+        val device = DeviceStatus.read(this)
+        val targetSet = streamTargetSet()
+        val problems = mutableListOf<String>()
+        if (!targetSet) problems += getString(R.string.prep_warn_no_key)
+        s.message?.let { problems += getString(R.string.status_failed, it) }
+        if (network == getString(R.string.net_none)) problems += network
+        if (device.batteryPercent in 0 until LOW_BATTERY_PERCENT && !device.charging) {
+            problems += getString(R.string.prep_warn_battery, device.batteryPercent)
+        }
+        if (device.temperatureC >= HOT_C || device.thermalStatus >= THERMAL_WARN) {
+            problems += getString(R.string.prep_warn_hot, device.temperatureC)
+        }
+        if (LiveControls.micMuted) problems += getString(R.string.status_mic_muted)
+        if (LiveControls.covered) problems += getString(R.string.status_covered)
+
+        prepHeaderTitle.setText(if (problems.isEmpty()) R.string.prep_title else R.string.prep_title_warn)
+        prepHeaderTitle.setTextColor(if (problems.isEmpty()) COLOR_TEXT else COLOR_WARN)
+        prepHeaderToggle.setText(if (prepCollapsed) R.string.prep_expand else R.string.prep_collapse)
+        prepRows.visibility = if (prepCollapsed) View.GONE else View.VISIBLE
+        if (prepCollapsed) return
+
+        if (ChzzkPrefs.loggedIn(this)) {
+            val setting = prepLiveSetting
+            prepTitle.label.setText(R.string.prep_label_title)
+            prepTitle.value.text = when {
+                setting != null -> setting.title.ifBlank { getString(R.string.prep_no_title) }
+                prepLiveFailed -> getString(R.string.prep_load_failed)
+                else -> getString(R.string.prep_loading)
+            }
+            prepCategory.view.visibility = View.VISIBLE
+            prepCategory.value.text = when {
+                setting != null -> setting.category?.name ?: getString(R.string.category_none)
+                prepLiveFailed -> "-"
+                else -> getString(R.string.prep_loading)
+            }
+        } else {
+            prepTitle.label.setText(R.string.prep_label_chzzk)
+            prepTitle.value.setText(R.string.prep_chzzk_off)
+            prepCategory.view.visibility = View.GONE
+        }
+
+        val quality = LivePrefs.quality(this)
+        prepQuality.value.text = getString(R.string.prep_quality, quality.label, quality.bitrateKbps / 1000f)
+
+        val widgets = BrowserSources.slots(OverlayStore.current).count { it?.active == true }
+        prepWidgets.value.text = if (widgets == 0) {
+            getString(R.string.prep_widgets_none)
+        } else {
+            getString(R.string.prep_widgets_count, widgets)
+        }
+
+        prepCheck.value.text = when {
+            problems.isNotEmpty() -> problems.joinToString(" · ")
+            device.batteryPercent >= 0 -> getString(R.string.prep_check_ok, network, device.batteryPercent, device.temperatureC)
+            else -> network
+        }
+        prepCheck.value.setTextColor(if (problems.isEmpty()) COLOR_OK else COLOR_WARN)
+        // 스트림 키가 없을 때만 누르면 할 일이 있다 (방송 설정의 서버 주소·스트림 키).
+        prepCheck.arrow.visibility = if (targetSet) View.INVISIBLE else View.VISIBLE
     }
 
     private fun elapsed(startedAtMs: Long): String {
@@ -1343,8 +1662,13 @@ class MainActivity : Activity() {
         } else if (rotation == Surface.ROTATION_180) {
             matrix.postRotate(180f, centerX, centerY)
         }
+        // 위 변환은 영상을 가운데에 둔다. [displayedImageRect] 자리(왼쪽에 붙임)로 옮긴다.
+        displayedImageRect()?.let { image ->
+            matrix.postTranslate(image.left - (viewWidth - image.width()) / 2, image.top - (viewHeight - image.height()) / 2)
+        }
         preview.setTransform(matrix)
         renderWidgets()
+        layoutAroundVideo()
     }
 
     companion object {
@@ -1369,6 +1693,14 @@ class MainActivity : Activity() {
         private const val SLOW_MODE_SEC = 5
         private const val MAX_CATEGORY_RESULTS = 10
         private const val MAX_CHAT_VIEWS = 100
+
+        // 방송 준비 카드의 점검 기준. 배터리 온도는 40°C를 넘으면 방송 중 발열로 화질이 내려가기 쉽다.
+        private const val LOW_BATTERY_PERCENT = 20
+        private const val HOT_C = 40f
+        private const val THERMAL_WARN = 2 // PowerManager.THERMAL_STATUS_MODERATE
+        private const val COLOR_TEXT = 0xFFFFFFFF.toInt()
+        private const val COLOR_OK = 0xFFA5D6A7.toInt()
+        private const val COLOR_WARN = 0xFFFFD54F.toInt()
         private val NICK_COLORS = intArrayOf(0xFF7CFC00.toInt(), 0xFFFFD54F.toInt(), 0xFF80D8FF.toInt(), 0xFFFF8A80.toInt(), 0xFFB388FF.toInt(), 0xFFA7FFEB.toInt())
     }
 }
