@@ -43,6 +43,7 @@ object ChzzkAccount {
         executor.execute {
             api(app)?.revoke() ?: ChzzkPrefs.TokenStore(app).also { it.tokens = null }
             ChzzkPrefs.setChannelName(app, null)
+            ChzzkPrefs.setChannelId(app, null)
             main.post {
                 CookieManager.getInstance().removeAllCookies(null)
                 done()

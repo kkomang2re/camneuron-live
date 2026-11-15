@@ -113,8 +113,35 @@ class MainActivity : Activity() {
     private lateinit var flipButton: TextView
     private lateinit var widgetsButton: TextView
 
+    private lateinit var lockButton: TextView
+
     /** 버튼이 지금 방송 중 자리에 놓였는지. null이면 아직 놓지 않았다 ([arrangeButtons]). */
     private var buttonsLive: Boolean? = null
+
+    // 방송 중 상태 상자와 마이크 음량 막대
+    private lateinit var statusBox: View
+    private lateinit var micMeterRow: View
+    private lateinit var micMeterFill: View
+
+    /** 막대에 보이는 음량 (0~1). 올라갈 때는 바로, 내려갈 때는 천천히 따라간다. */
+    private var meterLevel = 0f
+
+    // 화면 잠금
+    private lateinit var lockOverlay: View
+    private lateinit var lockStatus: TextView
+    private lateinit var lockHint: View
+    private var locked = false
+
+    /** 잠금 중에 화면을 눌러 미리보기를 비쳐 보는 중. */
+    private var lockPeek = false
+
+    /** 방송 중에 잠갔는지. 그랬으면 방송이 끝날 때 잠금을 풀어 알아차리게 한다. */
+    private var lockedWhileLive = false
+
+    /** 직전 [render]의 방송 단계와 시작 시각·최고 시청자 (방송이 끝난 순간 요약을 보이려고). */
+    private var lastPhase = LiveState.Phase.IDLE
+    private var lastStartedAtMs = 0L
+    private var lastPeakViewers = 0
 
     /** 영상 오른쪽 빈 띠에 버튼 줄이 들어가는지. 안 들어가는 화면비면 줄이 영상 위에 겹친다 (위젯 조정 중에는 숨긴다). */
     private var railFits = true
@@ -154,7 +181,7 @@ class MainActivity : Activity() {
     private lateinit var chatStreamChip: TextView
     private lateinit var alertStreamChip: TextView
     private lateinit var sourcesList: LinearLayout
-    private lateinit var addSourceButton: TextView
+    private lateinit var sourceAddButtons: List<View>
 
     /** 설정 화면에서 고치는 중인 브라우저 소스 한 줄. [base]는 저장된 것 (자리·배율을 지킨다), 새로 더한 줄이면 null. */
     private class SourceRow(val view: View, val base: OverlayItem?, var stream: Boolean) {
@@ -197,6 +224,7 @@ class MainActivity : Activity() {
     private lateinit var slowChip: TextView
     private lateinit var followerChip: TextView
     private lateinit var readAloudChip: TextView
+    private lateinit var readChatChip: TextView
     private var chatSettings: ChzzkChatSettings? = null
     private var shownTotal = -1L
     private val chatListener = ChzzkChat.Listener { renderChat() }
@@ -286,7 +314,6 @@ class MainActivity : Activity() {
         chatStreamChip = findViewById(R.id.chip_chat_stream)
         alertStreamChip = findViewById(R.id.chip_alert_stream)
         sourcesList = findViewById(R.id.sources_list)
-        addSourceButton = findViewById(R.id.btn_add_source)
         OverlayStore.init(this)
         chzzkStatus = findViewById(R.id.chzzk_status)
         clientIdInput = findViewById(R.id.input_client_id)
@@ -309,6 +336,14 @@ class MainActivity : Activity() {
         slowChip = findViewById(R.id.chip_slow)
         followerChip = findViewById(R.id.chip_follower)
         readAloudChip = findViewById(R.id.chip_read_aloud)
+        readChatChip = findViewById(R.id.chip_read_chat)
+        lockButton = findViewById(R.id.btn_lock)
+        statusBox = findViewById(R.id.status_box)
+        micMeterRow = findViewById(R.id.mic_meter_row)
+        micMeterFill = findViewById(R.id.mic_meter_fill)
+        lockOverlay = findViewById(R.id.lock_overlay)
+        lockStatus = findViewById(R.id.lock_status)
+        lockHint = findViewById(R.id.lock_hint)
         adjustButton = findViewById(R.id.btn_adjust)
         adjustPanel = findViewById(R.id.adjust_panel)
         smoothRow = findViewById(R.id.row_beauty_smooth)
@@ -362,6 +397,7 @@ class MainActivity : Activity() {
         findViewById<View>(R.id.btn_save).setOnClickListener { saveSettings() }
         findViewById<View>(R.id.btn_cancel).setOnClickListener { showSettings(false) }
         setUpQuickButtons()
+        setUpLock()
         setUpPrepCard()
         setUpQualityControls()
         setUpWidgets()
@@ -387,6 +423,7 @@ class MainActivity : Activity() {
     /** 열린 창이 있으면 그것부터 닫고, 없으면 종료할지 묻는다. */
     private fun handleBack() {
         when {
+            locked -> Toast.makeText(this, R.string.toast_locked, Toast.LENGTH_SHORT).show()
             morePanel.visibility == View.VISIBLE -> showMore(false)
             settingsPanel.visibility == View.VISIBLE -> showSettings(false)
             editingWidgets -> setEditingWidgets(false)
@@ -444,7 +481,7 @@ class MainActivity : Activity() {
      * 버튼·줌 단계·상태 글자·준비 카드는 시스템 바·카메라 구멍을 피해 안쪽으로 민다.
      */
     private fun avoidSystemBars() {
-        val statusMargins = status.layoutParams as ViewGroup.MarginLayoutParams
+        val statusMargins = statusBox.layoutParams as ViewGroup.MarginLayoutParams
         val baseStart = statusMargins.leftMargin
         val baseTop = statusMargins.topMargin
         val cardMargins = prepCard.layoutParams as ViewGroup.MarginLayoutParams
@@ -481,7 +518,8 @@ class MainActivity : Activity() {
             insetBottom = bottom
             statusMargins.leftMargin = baseStart + left
             statusMargins.topMargin = baseTop + top
-            status.layoutParams = statusMargins
+            statusBox.layoutParams = statusMargins
+            lockOverlay.setPadding(left, top, right, bottom)
             cardMargins.leftMargin = baseCardStart + left
             cardMargins.topMargin = baseCardTop + top
             prepCard.layoutParams = cardMargins
@@ -521,6 +559,7 @@ class MainActivity : Activity() {
         LiveState.addListener(stateListener)
         engine.addListener(engineListener)
         main.post(ticker)
+        main.post(meterTicker)
         val missing = requiredPermissions().filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
         if (missing.isNotEmpty() && !permissionsRequested) {
             permissionsRequested = true
@@ -539,6 +578,7 @@ class MainActivity : Activity() {
         shownTotal = -1 // 채팅 줄을 처음부터 다시 그린다
         renderChat()
         if (LiveState.current.phase == LiveState.Phase.IDLE) refreshPrepLiveInfo()
+        ensureChannelId()
         // 이미 열려 있으면 다시 채우지 않는다 (다른 앱에서 값을 복사해 오는 동안 입력한 것이 지워지지 않게).
         if (LivePrefs.streamKey(this).isEmpty() && LiveState.current.phase == LiveState.Phase.IDLE &&
             settingsPanel.visibility != View.VISIBLE
@@ -559,7 +599,20 @@ class MainActivity : Activity() {
         ChzzkChat.release()
         setEditingWidgets(false)
         main.removeCallbacks(ticker)
+        main.removeCallbacks(meterTicker)
         super.onStop()
+    }
+
+    /**
+     * 시청자 수를 읽으려면 내 채널 ID가 필요하다. 로그인할 때 받아 두지만, 그 전에 로그인해 둔 폰에는 없으므로 한 번 받아 둔다.
+     */
+    private fun ensureChannelId() {
+        if (!ChzzkPrefs.loggedIn(this) || ChzzkPrefs.channelId(this).isNotEmpty()) return
+        ChzzkAccount.run(this, { it.me() }) { result ->
+            result.onSuccess { channel ->
+                if (ChzzkPrefs.loggedIn(this)) ChzzkPrefs.setChannelId(this, channel.channelId)
+            }
+        }
     }
 
     @Deprecated("Deprecated in Java")
@@ -583,7 +636,13 @@ class MainActivity : Activity() {
 
     private fun toggleLive() {
         if (LiveState.current.phase != LiveState.Phase.IDLE) {
-            LiveService.stop(this)
+            // 밖에서 잘못 눌러 방송이 끝나지 않게 한 번 묻는다.
+            android.app.AlertDialog.Builder(this)
+                .setTitle(R.string.stop_title)
+                .setMessage(R.string.stop_message)
+                .setPositiveButton(R.string.stop_confirm) { _, _ -> LiveService.stop(this) }
+                .setNegativeButton(R.string.stop_cancel, null)
+                .show()
             return
         }
         if (!hasCameraPermission()) {
@@ -596,6 +655,72 @@ class MainActivity : Activity() {
             return
         }
         LiveService.start(this)
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // 화면 잠금, 마이크 음량 막대
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun setUpLock() {
+        lockButton.setOnClickListener {
+            showMore(false)
+            setLocked(true)
+        }
+        // 잠금 중에 화면을 누르면 미리보기를 비쳐 보고, 다시 누르면 어둡게 한다. 다른 터치는 모두 여기서 막힌다.
+        lockOverlay.setOnClickListener {
+            lockPeek = !lockPeek
+            applyLock()
+        }
+        val unlock = findViewById<View>(R.id.lock_unlock)
+        unlock.setOnClickListener { Toast.makeText(this, R.string.toast_locked, Toast.LENGTH_SHORT).show() }
+        unlock.setOnLongClickListener {
+            setLocked(false)
+            true
+        }
+    }
+
+    private fun setLocked(lock: Boolean) {
+        if (locked == lock) return
+        locked = lock
+        lockPeek = false
+        lockedWhileLive = lock && LiveState.current.phase != LiveState.Phase.IDLE
+        if (lock) {
+            // 잠그면 열려 있던 창은 닫는다 (풀었을 때 방송 화면부터 보이게).
+            if (editingWidgets) setEditingWidgets(false)
+            getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(lockOverlay.windowToken, 0)
+        }
+        applyLock()
+        render(LiveState.current)
+    }
+
+    /** 잠금 화면을 지금 상태로: 검게(화면 밝기도 가장 낮게) 또는 비쳐 보이게. 풀면 밝기를 폰 설정으로 돌린다. */
+    private fun applyLock() {
+        lockOverlay.visibility = if (locked) View.VISIBLE else View.GONE
+        val dark = locked && !lockPeek
+        lockOverlay.setBackgroundColor(if (dark) 0xFF000000.toInt() else 0x00000000)
+        lockStatus.visibility = if (dark) View.VISIBLE else View.GONE
+        lockHint.visibility = if (dark) View.VISIBLE else View.GONE
+        window.attributes = window.attributes.apply {
+            screenBrightness = if (dark) LOCK_BRIGHTNESS else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        }
+    }
+
+    /** 방송 중이면 0.1초마다 마이크 음량 막대를 그린다. 올라갈 때는 바로, 내려갈 때는 천천히. */
+    private val meterTicker = object : Runnable {
+        override fun run() {
+            val show = LiveState.current.phase != LiveState.Phase.IDLE && AudioMeter.active
+            micMeterRow.visibility = if (show) View.VISIBLE else View.GONE
+            if (show) {
+                val level = AudioMeter.bar(AudioMeter.take())
+                meterLevel = if (level >= meterLevel) level else maxOf(level, meterLevel - METER_FALL)
+                micMeterFill.pivotX = 0f
+                micMeterFill.scaleX = meterLevel
+                micMeterFill.setBackgroundColor(if (meterLevel >= METER_LOUD) COLOR_LOUD else COLOR_OK)
+            } else {
+                meterLevel = 0f
+            }
+            main.postDelayed(this, METER_MS)
+        }
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -745,11 +870,25 @@ class MainActivity : Activity() {
             )
         }
         widgetFrames.forEach { widgetLayer.addView(it) }
-        addSourceButton.setOnClickListener {
-            if (sourceRows.size >= BrowserSources.MAX) {
-                Toast.makeText(this, getString(R.string.toast_sources_full, BrowserSources.MAX), Toast.LENGTH_SHORT).show()
-            } else {
-                addSourceRow(null).url.requestFocus()
+        findViewById<TextView>(R.id.label_sources).text = getString(R.string.label_sources, BrowserSources.MAX)
+        // 이름을 미리 넣은 줄을 만든다. 이름으로 종류(후원 알림·영상 후원)를 알아보고 알맞은 자리에 놓는다 ([WidgetLayout.kind]).
+        val presets = listOf(
+            R.id.btn_add_toonation_alert to R.string.source_toonation_alert,
+            R.id.btn_add_toonation_video to R.string.source_toonation_video,
+            R.id.btn_add_chzzk_video to R.string.source_chzzk_video,
+            R.id.btn_add_source to null,
+        )
+        sourceAddButtons = presets.map { (id, name) ->
+            findViewById<View>(id).apply {
+                setOnClickListener {
+                    if (sourceRows.size >= BrowserSources.MAX) {
+                        Toast.makeText(context, getString(R.string.toast_sources_full, BrowserSources.MAX), Toast.LENGTH_SHORT).show()
+                    } else {
+                        val row = addSourceRow(null)
+                        if (name != null) row.name.setText(name)
+                        row.url.requestFocus()
+                    }
+                }
             }
         }
         chatStreamChip.setOnClickListener {
@@ -873,7 +1012,8 @@ class MainActivity : Activity() {
     }
 
     private fun renderSourceButtons() {
-        addSourceButton.alpha = if (sourceRows.size < BrowserSources.MAX) 1f else 0.4f
+        val alpha = if (sourceRows.size < BrowserSources.MAX) 1f else 0.4f
+        sourceAddButtons.forEach { it.alpha = alpha }
     }
 
     private fun renderWidgetDraft() {
@@ -1138,6 +1278,10 @@ class MainActivity : Activity() {
             ChzzkPrefs.setReadAloud(this, !ChzzkPrefs.readAloud(this))
             renderChatChips()
         }
+        readChatChip.setOnClickListener {
+            ChzzkPrefs.setReadChat(this, !ChzzkPrefs.readChat(this))
+            renderChatChips()
+        }
         slowChip.setOnClickListener {
             val current = chatSettings ?: return@setOnClickListener
             updateChatSettings { it.updateChatSettings(current, slowModeSec = if (current.slowModeSec > 0) 0 else SLOW_MODE_SEC) }
@@ -1191,6 +1335,7 @@ class MainActivity : Activity() {
         slowChip.isActivated = (settings?.slowModeSec ?: 0) > 0
         followerChip.isActivated = settings?.followerOnly == true
         readAloudChip.isActivated = ChzzkPrefs.readAloud(this)
+        readChatChip.isActivated = ChzzkPrefs.readChat(this)
     }
 
     /** 새로 온 줄만 덧붙이고, 100줄이 넘으면 오래된 줄을 뺀다. */
@@ -1423,11 +1568,21 @@ class MainActivity : Activity() {
             LiveState.Phase.LIVE -> getString(R.string.status_live, elapsed(s.startedAtMs), s.sendKbps / 1000f)
             LiveState.Phase.RECONNECTING -> getString(R.string.status_reconnecting, s.message ?: "")
         }
+        val device = DeviceStatus.read(this)
         if (!idle) {
+            // 치지직에 실제로 떴는지와 시청자 수 (계정을 연결했을 때만 안다).
+            if (ChzzkPrefs.channelId(this).isNotEmpty()) {
+                lines += when (s.chzzkOpen) {
+                    true -> getString(R.string.status_chzzk_open, s.viewers.coerceAtLeast(0))
+                    false -> getString(R.string.status_chzzk_closed)
+                    null -> getString(R.string.status_chzzk_checking)
+                }
+            }
             s.format?.let { lines += getString(R.string.status_format, "${it.height}p${it.fps}", s.targetKbps / 1000f) }
             val network = NetworkLabel.current(this)
-            lines += if (s.droppedFrames > 0) {
-                getString(R.string.status_network_drops, network, s.droppedFrames)
+            if (s.droppedFrames > 0) lines += getString(R.string.status_network_drops, network, s.droppedFrames)
+            lines += if (device.batteryPercent >= 0) {
+                getString(R.string.status_device, network, device.batteryPercent, device.temperatureC)
             } else {
                 getString(R.string.status_network, network)
             }
@@ -1435,14 +1590,36 @@ class MainActivity : Activity() {
             if (s.netLevel > 0) lines += getString(R.string.status_net)
             s.micError?.let { lines += getString(R.string.status_no_mic, it) }
             if (s.coverUnavailable) lines += getString(R.string.status_cover_unavailable)
+        } else if (device.batteryPercent >= 0) {
+            lines += getString(R.string.status_battery, device.batteryPercent, device.temperatureC)
         }
         if (LiveControls.micMuted) lines += getString(R.string.status_mic_muted)
         if (LiveControls.covered) lines += getString(R.string.status_covered)
-        val device = DeviceStatus.read(this)
-        if (device.batteryPercent >= 0) lines += getString(R.string.status_battery, device.batteryPercent, device.temperatureC)
-        status.text = lines.joinToString("\n")
+        val text = lines.joinToString("\n")
+        status.text = text
+        lockStatus.text = text
         // 방송 전에는 준비 카드가 같은 자리에서 같은 것(실패 이유, 네트워크, 배터리)을 보인다.
-        status.visibility = if (idle) View.GONE else View.VISIBLE
+        statusBox.visibility = if (idle) View.GONE else View.VISIBLE
+
+        // 방송이 끝난 순간: 얼마나 했는지 알리고, 방송 중에 잠가 둔 화면은 풀어 알아차리게 한다.
+        val ended = idle && lastPhase != LiveState.Phase.IDLE
+        lastPhase = s.phase // 아래에서 잠금을 풀면 render가 다시 불린다. 그때 또 "끝난 순간"으로 보지 않게 먼저 적는다.
+        if (ended) {
+            if (locked && lockedWhileLive) setLocked(false)
+            val length = elapsed(lastStartedAtMs)
+            val summary = if (lastPeakViewers > 0) {
+                getString(R.string.toast_live_ended_viewers, length, lastPeakViewers)
+            } else {
+                getString(R.string.toast_live_ended, length)
+            }
+            // 연결하지 못해 끝난 것이면 이유가 준비 카드에 보이므로 요약은 보이지 않는다.
+            if (s.message == null) Toast.makeText(this, summary, Toast.LENGTH_LONG).show()
+        }
+        if (!idle) {
+            lastStartedAtMs = s.startedAtMs
+            lastPeakViewers = s.peakViewers
+        }
+        lockButton.isActivated = locked
 
         val muted = LiveControls.micMuted
         micButton.isActivated = muted
@@ -1467,7 +1644,7 @@ class MainActivity : Activity() {
     // 오른쪽 버튼 줄과 "더보기"
 
     /**
-     * 방송 전에는 준비에 쓰는 버튼(설정·전환·위젯·보정)을, 방송 중에는 자주 누르는 버튼(마이크·가리기·채팅)을 줄에 두고
+     * 방송 전에는 준비에 쓰는 버튼(설정·전환·위젯·보정)을, 방송 중에는 자주 누르는 버튼(마이크·가리기·채팅·잠금)을 줄에 두고
      * 나머지는 "더보기" 안에 넣는다. 같은 버튼 뷰를 옮기므로 누를 때 하는 일과 켜짐 표시는 한 곳에서 관리된다.
      * 방송 설정은 방송 중에 바꿀 수 없어 방송 중에는 어디에도 두지 않는다.
      */
@@ -1475,17 +1652,17 @@ class MainActivity : Activity() {
         if (buttonsLive == live) return
         buttonsLive = live
         val inRail = if (live) {
-            listOf(micButton, coverButton, chatButton)
+            listOf(micButton, coverButton, chatButton, lockButton)
         } else {
             listOf(settingsButton, flipButton, widgetsButton, adjustButton)
         }
         val inMore = if (live) {
             listOf(flipButton, widgetsButton, adjustButton, torchButton, stabilizationButton)
         } else {
-            listOf(chatButton, micButton, coverButton, torchButton, stabilizationButton)
+            listOf(chatButton, micButton, coverButton, lockButton, torchButton, stabilizationButton)
         }
         val all = listOf(
-            settingsButton, flipButton, widgetsButton, adjustButton, micButton, coverButton, chatButton,
+            settingsButton, flipButton, widgetsButton, adjustButton, micButton, coverButton, chatButton, lockButton,
             torchButton, stabilizationButton, moreButton, liveButton,
         )
         all.forEach { (it.parent as? ViewGroup)?.removeView(it) }
@@ -1698,6 +1875,14 @@ class MainActivity : Activity() {
         private const val LOW_BATTERY_PERCENT = 20
         private const val HOT_C = 40f
         private const val THERMAL_WARN = 2 // PowerManager.THERMAL_STATUS_MODERATE
+        /** 잠금 화면의 밝기 (0~1). 0은 기기에 따라 화면이 꺼진 것처럼 되어 아주 낮은 값을 쓴다. */
+        private const val LOCK_BRIGHTNESS = 0.01f
+
+        // 마이크 음량 막대: 0.1초마다 그리고, 내려갈 때는 한 번에 이만큼씩. 이 길이를 넘으면(약 -6 dB) 너무 큰 소리로 본다.
+        private const val METER_MS = 100L
+        private const val METER_FALL = 0.06f
+        private const val METER_LOUD = 0.9f
+        private const val COLOR_LOUD = 0xFFFF8A80.toInt()
         private const val COLOR_TEXT = 0xFFFFFFFF.toInt()
         private const val COLOR_OK = 0xFFA5D6A7.toInt()
         private const val COLOR_WARN = 0xFFFFD54F.toInt()

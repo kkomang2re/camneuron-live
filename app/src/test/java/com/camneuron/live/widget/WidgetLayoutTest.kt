@@ -31,6 +31,25 @@ class WidgetLayoutTest {
         assertEquals(Kind.ALERT, WidgetLayout.kind(first, source.copy(name = "룰렛", url = "https://example.com/x")))
         assertEquals(Kind.ALERT, WidgetLayout.kind(first, source.copy(name = "후원 알림", url = "https://example.com/chat")))
         assertEquals(Kind.CHAT, WidgetLayout.kind(first, source.copy(name = "Chat", url = "https://example.com/x")))
+        // "영상 후원"은 후원 알림이 아니라 영상 후원이다.
+        assertEquals(Kind.VIDEO, WidgetLayout.kind(first, source.copy(name = "투네이션 영상 후원", url = "https://toon.at/widget/alertbox/abc")))
+        assertEquals(Kind.VIDEO, WidgetLayout.kind(first, source.copy(name = "치지직 영도", url = "https://example.com/x")))
+        assertEquals(Kind.VIDEO, WidgetLayout.kind(first, source.copy(url = "https://example.com/widget/video/abc")))
+        assertEquals(Kind.ALERT, WidgetLayout.kind(first, source.copy(name = "투네이션 후원 알림", url = "https://example.com/x")))
+    }
+
+    @Test
+    fun videoDonationGetsA16by9SpotAtFullSize() {
+        val video = source.copy(name = "치지직 영상 후원", url = "https://example.com/v")
+        val out = WidgetLayout.arrange(OverlaySettings(sources = listOf(toonationAlert, video)))
+        assertEquals(WidgetLayout.ALERT, out.sources[0].spot())
+        assertEquals(WidgetLayout.VIDEO, out.sources[1].spot())
+        assertEquals(1f, out.sources[1].zoom, 0f)
+        // 송출 영상(16:9)에서 폭과 높이의 비율이 같으면 칸도 16:9다.
+        assertEquals(WidgetLayout.VIDEO.w, WidgetLayout.VIDEO.h, 1e-6f)
+        // 후원 알림(위 가운데)과 첫 아래쪽 칸을 가리지 않는다.
+        assertTrue(WidgetLayout.VIDEO.y >= WidgetLayout.ALERT.y + WidgetLayout.ALERT.h)
+        assertTrue(WidgetLayout.VIDEO.y + WidgetLayout.VIDEO.h <= WidgetLayout.OTHERS[0].y + 1e-6f)
     }
 
     @Test
@@ -61,7 +80,7 @@ class WidgetLayoutTest {
 
     @Test
     fun spotsStayInsideTheVideoAndKeepTheCentreClear() {
-        val all = listOf(WidgetLayout.CHAT, WidgetLayout.CHAT_SECOND, WidgetLayout.ALERT) + WidgetLayout.OTHERS
+        val all = listOf(WidgetLayout.CHAT, WidgetLayout.CHAT_SECOND, WidgetLayout.ALERT, WidgetLayout.VIDEO) + WidgetLayout.OTHERS
         for (s in all) {
             assertTrue(s.x >= 0f && s.y >= 0f && s.x + s.w <= 1f && s.y + s.h <= 1f)
         }

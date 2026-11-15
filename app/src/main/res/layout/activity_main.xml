@@ -47,19 +47,58 @@
         android:textSize="14sp"
         android:visibility="gone" />
 
-    <TextView
-        android:id="@+id/status"
+    <!-- 방송 중 상태: 방송 시간·보내는 속도, 치지직에 떴는지와 시청자 수, 화질, 네트워크·배터리, 그 아래 마이크 음량 막대. -->
+    <LinearLayout
+        android:id="@+id/status_box"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="top|start"
         android:layout_margin="16dp"
         android:background="@drawable/bg_panel"
+        android:orientation="vertical"
         android:paddingStart="10dp"
         android:paddingTop="6dp"
         android:paddingEnd="10dp"
-        android:paddingBottom="6dp"
-        android:textColor="@android:color/white"
-        android:textSize="14sp" />
+        android:paddingBottom="6dp">
+
+        <TextView
+            android:id="@+id/status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="@android:color/white"
+            android:textSize="14sp" />
+
+        <LinearLayout
+            android:id="@+id/mic_meter_row"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:layout_marginBottom="2dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/label_mic_meter"
+                android:textColor="#CCFFFFFF"
+                android:textSize="12sp" />
+
+            <FrameLayout
+                android:layout_width="120dp"
+                android:layout_height="6dp"
+                android:layout_marginStart="8dp"
+                android:background="#40FFFFFF">
+
+                <View
+                    android:id="@+id/mic_meter_fill"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:background="#A5D6A7" />
+            </FrameLayout>
+        </LinearLayout>
+    </LinearLayout>
 
     <!-- 방송 준비 카드: 방송 전에만 보인다. 줄을 누르면 방송 설정의 그 자리가 열린다. 머리를 누르면 접힌다. -->
     <LinearLayout
@@ -170,10 +209,24 @@
                 style="@style/ChipSmall"
                 android:text="@string/chip_follower" />
 
+        </LinearLayout>
+
+        <!-- 소리 내어 읽기: 후원·구독, 채팅 (걸으면서 방송할 때) -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:orientation="horizontal">
+
             <TextView
                 android:id="@+id/chip_read_aloud"
                 style="@style/ChipSmall"
                 android:text="@string/chip_read_aloud" />
+
+            <TextView
+                android:id="@+id/chip_read_chat"
+                style="@style/ChipSmall"
+                android:text="@string/chip_read_chat" />
         </LinearLayout>
 
         <ScrollView
@@ -371,6 +424,13 @@
                 style="@style/RailButton"
                 android:drawableTop="@drawable/ic_rail_cover"
                 android:text="@string/rail_cover" />
+
+            <!-- 화면 잠금: 터치를 막고 화면을 어둡게 (주머니·짐벌, 배터리·발열). -->
+            <TextView
+                android:id="@+id/btn_lock"
+                style="@style/RailButton"
+                android:drawableTop="@drawable/ic_rail_lock"
+                android:text="@string/rail_lock" />
 
             <TextView
                 android:id="@+id/btn_torch"
@@ -760,10 +820,11 @@
                 android:layout_marginTop="6dp"
                 android:text="@string/chip_widget_stream" />
 
+            <!-- 글자는 코드에서 넣는다 (넣을 수 있는 개수가 들어간다). -->
             <TextView
+                android:id="@+id/label_sources"
                 style="@style/PanelLabel"
-                android:layout_marginTop="16dp"
-                android:text="@string/label_sources" />
+                android:layout_marginTop="16dp" />
 
             <!-- 브라우저 소스 줄 (row_browser_source)을 코드에서 넣는다. -->
             <LinearLayout
@@ -772,11 +833,40 @@
                 android:layout_height="wrap_content"
                 android:orientation="vertical" />
 
-            <TextView
-                android:id="@+id/btn_add_source"
-                style="@style/Chip"
+            <!-- 자주 쓰는 것은 이름을 미리 넣은 줄을 만든다 (이름으로 종류를 알아보고 알맞은 자리에 놓는다). 주소만 붙여 넣으면 된다. -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
                 android:layout_marginTop="10dp"
-                android:text="@string/btn_add_source" />
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/btn_add_toonation_alert"
+                    style="@style/Chip"
+                    android:text="@string/btn_add_toonation_alert" />
+
+                <TextView
+                    android:id="@+id/btn_add_toonation_video"
+                    style="@style/Chip"
+                    android:text="@string/btn_add_toonation_video" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/btn_add_chzzk_video"
+                    style="@style/Chip"
+                    android:text="@string/btn_add_chzzk_video" />
+
+                <TextView
+                    android:id="@+id/btn_add_source"
+                    style="@style/Chip"
+                    android:text="@string/btn_add_source" />
+            </LinearLayout>
 
             <TextView
                 android:id="@+id/btn_widget_edit"
@@ -831,4 +921,52 @@
             android:layout_marginStart="12dp"
             android:text="@string/btn_widget_done" />
     </LinearLayout>
+
+    <!--
+        화면 잠금. 모든 것 위에 놓여 터치를 막는다. 처음에는 검게 (화면 밝기도 가장 낮게: OLED라 배터리·발열이 준다),
+        한 번 누르면 미리보기가 비쳐 보이고 다시 누르면 검게. 아래 버튼을 길게 눌러야 풀린다.
+    -->
+    <FrameLayout
+        android:id="@+id/lock_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@android:color/black"
+        android:clickable="true"
+        android:focusable="true"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/lock_status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:gravity="center"
+            android:lineSpacingMultiplier="1.2"
+            android:textColor="#9E9E9E"
+            android:textSize="18sp" />
+
+        <TextView
+            android:id="@+id/lock_hint"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|center_horizontal"
+            android:layout_marginTop="20dp"
+            android:text="@string/lock_hint"
+            android:textColor="#757575"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/lock_unlock"
+            android:layout_width="wrap_content"
+            android:layout_height="52dp"
+            android:layout_gravity="bottom|center_horizontal"
+            android:layout_marginBottom="24dp"
+            android:background="@drawable/bg_lock_button"
+            android:gravity="center"
+            android:paddingStart="28dp"
+            android:paddingEnd="28dp"
+            android:text="@string/lock_unlock"
+            android:textColor="#BDBDBD"
+            android:textSize="14sp" />
+    </FrameLayout>
 </FrameLayout>
