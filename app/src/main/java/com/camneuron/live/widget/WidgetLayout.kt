@@ -12,10 +12,12 @@ import com.camneuron.core.overlay.OverlaySettings
  *   폰의 상태 글자 아래, 줌 버튼 위에서 끝난다. 두 번째 채팅(투네이션 채팅 등)은 오른쪽 세로 칸.
  * - 후원 알림(룰렛 포함): 위 가운데. 잠깐 떴다 사라지므로 여러 개가 한 자리를 같이 써도 된다.
  *   OBS용 알림(보통 800x600)이 잘리지 않고 얼굴을 덜 가리게 내용을 70%로 줄인다.
+ * - 영상 후원: 오른쪽 가운데의 16:9 칸. 영상이 도는 동안 후원 알림을 가리지 않게 알림 아래, 아래쪽 칸 위에 둔다.
+ *   내용은 줄이지 않는다.
  * - 그 밖(목표 막대 등): 아래쪽, 채팅 칸을 피해 오른쪽부터 차례로.
  */
 object WidgetLayout {
-    enum class Kind { CHAT, ALERT, OTHER }
+    enum class Kind { CHAT, ALERT, VIDEO, OTHER }
 
     /** 위젯 하나의 자리와 내용 배율. */
     data class Spot(val x: Float, val y: Float, val w: Float, val h: Float, val zoom: Float = 1f)
@@ -23,6 +25,7 @@ object WidgetLayout {
     val CHAT = Spot(x = 0.02f, y = 0.30f, w = 0.24f, h = 0.55f)
     val CHAT_SECOND = Spot(x = 0.74f, y = 0.30f, w = 0.24f, h = 0.48f)
     val ALERT = Spot(x = 0.28f, y = 0.03f, w = 0.44f, h = 0.40f, zoom = 0.7f)
+    val VIDEO = Spot(x = 0.62f, y = 0.44f, w = 0.36f, h = 0.36f)
     val OTHERS = listOf(
         Spot(x = 0.64f, y = 0.80f, w = 0.34f, h = 0.17f),
         Spot(x = 0.28f, y = 0.80f, w = 0.34f, h = 0.17f),
@@ -30,6 +33,8 @@ object WidgetLayout {
         Spot(x = 0.28f, y = 0.62f, w = 0.34f, h = 0.17f),
     )
 
+    /** "영상 후원"에는 "후원"도 들어 있으므로 영상인지를 먼저 본다. */
+    private val VIDEO_WORDS = listOf("video", "영상", "영도")
     private val ALERT_WORDS = listOf("alert", "donation", "donate", "roulette", "후원", "알림", "도네", "룰렛")
     private val CHAT_WORDS = listOf("chat", "채팅")
 
@@ -43,6 +48,7 @@ object WidgetLayout {
     private fun guess(text: String): Kind? {
         val t = text.lowercase()
         return when {
+            VIDEO_WORDS.any { it in t } -> Kind.VIDEO
             ALERT_WORDS.any { it in t } -> Kind.ALERT
             CHAT_WORDS.any { it in t } -> Kind.CHAT
             else -> null
@@ -59,6 +65,7 @@ object WidgetLayout {
             result[index] = when (kind(index, item)) {
                 Kind.CHAT -> if (chats++ == 0) CHAT else CHAT_SECOND
                 Kind.ALERT -> ALERT
+                Kind.VIDEO -> VIDEO
                 Kind.OTHER -> OTHERS[others++ % OTHERS.size]
             }
         }

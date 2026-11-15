@@ -8,19 +8,24 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import com.camneuron.live.R
 import java.util.Locale
 import java.util.concurrent.CopyOnWriteArraySet
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 방송하는 사람이 폰에서 보는 치지직 채팅. 화면이나 방송 세션이 [acquire]하는 동안 세션을 붙여 둔다.
  * 후원·구독이 오면 진동하고, 켜 두었으면 소리 내어 읽는다 (이어폰을 끼면 걸으면서도 듣는다).
- * 모든 함수와 리스너는 메인 스레드에서 돈다.
+ * "채팅 읽기"를 켜면 채팅도 읽는다. 모든 함수와 리스너는 메인 스레드에서 돈다.
  */
 object ChzzkChat {
     private const val TAG = "ChzzkChat"
     private const val MAX_LINES = 100
+
+    /** 읽지 못한 것이 이만큼 밀려 있으면 새 채팅은 읽지 않는다 (후원·구독은 항상 읽는다). */
+    private const val MAX_QUEUED_CHAT = 3
 
     fun interface Listener {
         fun onChatChanged()
@@ -69,6 +74,7 @@ object ChzzkChat {
             tts?.shutdown()
             tts = null
             ttsReady = false
+            speaking.set(0)
         }
     }
 
@@ -124,6 +130,7 @@ object ChzzkChat {
         when (event) {
             is ChzzkEvent.Donation -> alert(app?.getString(R.string.chzzk_say_donation, event.nickname, event.amount, event.text))
             is ChzzkEvent.Subscription -> alert(app?.getString(R.string.chzzk_say_subscription, event.nickname, event.month))
+            is ChzzkEvent.Chat -> readChat(event)
             else -> Unit
         }
         listeners.forEach { it.onChatChanged() }
@@ -133,12 +140,26 @@ object ChzzkChat {
         val context = app ?: return
         vibrate(context)
         if (speech == null || !ChzzkPrefs.readAloud(context)) return
+        say(context, speech, skipWhenBusy = false)
+    }
+
+    /** "채팅 읽기"를 켰으면 채팅도 읽는다. 읽을 것이 밀려 있으면 그 채팅은 건너뛴다 (채팅이 몰릴 때 한참 뒤처지지 않게). */
+    private fun readChat(event: ChzzkEvent.Chat) {
+        val context = app ?: return
+        if (!ChzzkPrefs.readChat(context)) return
+        val speech = ChatSpeech.forChat(event) ?: return
+        say(context, speech, skipWhenBusy = true)
+    }
+
+    private fun say(context: Context, speech: String, skipWhenBusy: Boolean) {
+        if (skipWhenBusy && speaking.get() >= MAX_QUEUED_CHAT) return
         val engine = tts
         if (engine == null) {
             tts = TextToSpeech(context) { code ->
                 ttsReady = code == TextToSpeech.SUCCESS
                 if (ttsReady) {
                     tts?.language = Locale.KOREAN
+                    tts?.setOnUtteranceProgressListener(progress)
                     speak(speech)
                 }
             }
@@ -148,7 +169,28 @@ object ChzzkChat {
     }
 
     private fun speak(text: String) {
-        tts?.speak(text, TextToSpeech.QUEUE_ADD, null, "chzzk-${System.nanoTime()}")
+        val queued = tts?.speak(text, TextToSpeech.QUEUE_ADD, null, "chzzk-${System.nanoTime()}")
+        if (queued == TextToSpeech.SUCCESS) speaking.incrementAndGet()
+    }
+
+    /** 읽기를 맡긴 것 중 아직 다 읽지 못한 개수. 읽기 엔진의 스레드에서 줄어든다. */
+    private val speaking = AtomicInteger(0)
+
+    private val progress = object : UtteranceProgressListener() {
+        override fun onStart(utteranceId: String?) = Unit
+
+        override fun onDone(utteranceId: String?) = finished()
+
+        @Deprecated("Deprecated in Java")
+        override fun onError(utteranceId: String?) = finished()
+
+        override fun onError(utteranceId: String?, errorCode: Int) = finished()
+
+        override fun onStop(utteranceId: String?, interrupted: Boolean) = finished()
+
+        private fun finished() {
+            speaking.updateAndGet { if (it > 0) it - 1 else 0 }
+        }
     }
 
     private fun vibrate(context: Context) {

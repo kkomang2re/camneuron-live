@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 잠금 해제 버튼. 미리보기를 비쳐 볼 때 밑의 줌 단계와 섞여 보이지 않게 불투명하게. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="#F2101012" />
+    <stroke
+        android:width="1dp"
+        android:color="#66FFFFFF" />
+    <corners android:radius="18dp" />
+</shape>
