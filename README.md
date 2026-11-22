@@ -59,6 +59,14 @@ adb install -r app/build/outputs/apk/release/app-release.apk
 있으면 서명하고, 없으면 서명하지 않은 APK가 나온다 (폰에 깔 수 없다). 키를 잃으면 깔린 릴리즈 앱 위에 새 버전을 덮어 깔 수
 없고, 지우고 다시 깔면 폰에 저장한 설정이 사라진다. 그래서 키는 따로 보관한다.
 
+GitHub에서 빌드하기 (`.github/workflows/apk.yml`): main에 올라올 때나 Actions에서 직접 실행할 때 릴리즈 APK를 빌드해
+Releases에 올린다. 저장소 Secrets에 `RELEASE_SIGNING`(위 두 파일을 묶은 값)이 있으면 같은 키로 서명해, 받은 APK를 깔린 앱
+위에 덮어 깔 수 있다. 없으면 빌드마다 다른 임시 키로 서명한다 (덮어 깔 수 없다). 값을 만드는 법:
+
+```
+tar -cz keystore.properties keystore/camneuron-live-release.jks | base64 -w0
+```
+
 ## 지연 측정
 
 `tools/net-sim/`: 앱의 실제 송출 코드(rtmp 패키지, NetGovernor, LiveNet)를 PC에서 돌려, 느려졌다 빨라지는 망에서 영상이
