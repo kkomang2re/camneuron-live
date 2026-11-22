@@ -3,7 +3,6 @@ package com.camneuron.live
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -38,8 +37,9 @@ import kotlin.math.abs
  * 연결이 끊기면 [RETRY_MS]마다 다시 붙는다 (야외에서는 모바일 데이터가 잠깐씩 끊긴다). 단, 처음 연결부터 실패하면
  * 주소나 스트림 키가 틀렸을 가능성이 크므로 다시 시도하지 않고 멈춘다 ([onEnded]에 이유).
  * 카메라를 바꾸거나 미리보기가 붙고 떨어지면 연결은 유지하고 인코더만 새로 만든다 (새 시퀀스 헤더를 보낸다).
- * 발열([HeatGovernor])과 네트워크([NetGovernor])에 따라 비트레이트만 [quality]보다 낮춘다. 방송 중에 해상도를 바꾸면
- * 시청자 플레이어가 멈추는 경우가 있어 아직은 바꾸지 않는다.
+ * 네트워크([NetGovernor])가 약하면 비트레이트를 [quality]보다 낮춘다. 폰이 뜨거우면([HeatGovernor]) 처리량을 먼저
+ * 줄인다 (60fps면 30fps로, 위젯 그림 뜨기를 드물게, 가장 뜨거울 때만 비트레이트를 조금. [LiveHeat]).
+ * 방송 중에 해상도를 바꾸면 시청자 플레이어가 멈추는 경우가 있어 해상도는 바꾸지 않는다.
  * 마이크 끄기와 화면 가리기는 [LiveControls]를 따라 지금 인코더에 바로 적용한다.
  */
 class LiveSession(
@@ -105,6 +105,14 @@ class LiveSession(
 
     @Volatile
     private var targetBitrate = quality.bitrate
+
+    /** 지금 인코더에 요청한 프레임 수 (발열 단계에 따라 [quality]보다 낮을 수 있다). */
+    @Volatile
+    private var encoderFps = quality.fps
+
+    /** 세션이 끝나 위젯 설정을 되돌렸다. 그 뒤에 늦게 온 틱이 위젯을 다시 느리게 하지 않게. */
+    @Volatile
+    private var ended = false
 
     private val encoderFailures = ArrayDeque<Long>()
     private var lastBytesSent = 0L
@@ -198,8 +206,10 @@ class LiveSession(
         } finally {
             LiveControls.removeListener(controlsListener)
             BeautyStore.removeListener(beautyListener)
+            ended = true
             main.post {
                 WidgetHost.removeListener(widgetListener)
+                WidgetHost.slowdown = 1f
                 WidgetHost.release()
                 ChzzkChat.release()
             }
@@ -218,7 +228,9 @@ class LiveSession(
             val useFront = front
             val mime = VideoEncoder.MIME_AVC
             val supports = { w: Int, h: Int -> VideoEncoder.findEncoder(mime, w, h) != null }
-            val format = engine.resolveFormat(useFront, quality.width, quality.height, quality.fps, supports)
+            val fps = LiveHeat.fps(quality.fps, heat.level)
+            encoderFps = fps
+            val format = engine.resolveFormat(useFront, quality.width, quality.height, fps, supports)
             val name = VideoEncoder.findEncoder(mime, format.width, format.height)
                 ?: error("H.264 인코더 없음 (${format.width}x${format.height})")
             val next = VideoEncoder(
@@ -383,7 +395,11 @@ class LiveSession(
     // ------------------------------------------------------------------------------------------
     // 위젯 (채팅창, 후원 알림)
 
-    /** 메인 스레드에서. 방송에 넣기로 한 위젯만 얹고 나머지는 지운다. 그림은 복사해 넘긴다 (인코더가 맡아 해제한다). */
+    /**
+     * 메인 스레드에서. 방송에 넣기로 한 위젯만 얹고 나머지는 지운다.
+     * 그림은 복사하지 않고 그대로 넘긴다. [WidgetHost]는 뜰 때마다 새 그림을 만들고 넘긴 그림은 바꾸지도 해제하지도
+     * 않는다 (예전에는 그림마다 복사해 초당 수십 장, 장마다 수 MB씩 메모리를 새로 잡았다).
+     */
     private fun pushWidget(target: VideoEncoder?, index: Int, frame: WidgetHost.Frame?) {
         if (target == null) return
         val item = frame?.item
@@ -391,11 +407,14 @@ class LiveSession(
             target.setLayer(index, null, 0f, 0f, 0f, 0f, 0f)
             return
         }
-        val copy = frame.bitmap.copy(Bitmap.Config.ARGB_8888, false) ?: return
+        val bitmap = frame.bitmap
         val rect = WidgetCanvas.pixelRect(item)
         val w = WidgetCanvas.WIDTH.toFloat()
         val h = WidgetCanvas.HEIGHT.toFloat()
-        target.setLayer(index, copy, rect.left / w, rect.top / h, (rect.left + copy.width) / w, (rect.top + copy.height) / h, 1f)
+        target.setLayer(
+            index, bitmap, rect.left / w, rect.top / h, (rect.left + bitmap.width) / w, (rect.top + bitmap.height) / h, 1f,
+            owned = false,
+        )
     }
 
     // ------------------------------------------------------------------------------------------
@@ -435,7 +454,8 @@ class LiveSession(
     private fun tick() {
         val now = SystemClock.elapsedRealtime()
         val device = DeviceStatus.read(context)
-        var changed = heat.update(device.thermalStatus, device.temperatureC, now)
+        val heatChanged = heat.update(device.thermalStatus, device.temperatureC, now)
+        var changed = heatChanged
 
         val active = streamer
         var kbps = 0
@@ -454,9 +474,19 @@ class LiveSession(
         lastTickMs = now
 
         if (changed) {
-            targetBitrate = NetGovernor.limitBitrate(HeatGovernor.limitBitrate(quality.bitrate, heat.level), net.level)
+            targetBitrate = NetGovernor.limitBitrate(LiveHeat.bitrate(quality.bitrate, heat.level), net.level)
             Log.i(TAG, "bitrate ${targetBitrate / 1000} kbps (heat ${heat.level}, net ${net.level})")
             encoder?.setBitrate(targetBitrate)
+        }
+        if (heatChanged) {
+            val level = heat.level
+            val fps = LiveHeat.fps(quality.fps, level)
+            if (fps != encoderFps && encoder != null) {
+                // 연결은 유지하고 인코더만 새 프레임 수로 새로 만든다 (카메라 전환과 같은 길).
+                Log.i(TAG, "heat $level: ${encoderFps}fps -> ${fps}fps")
+                restartRequested = true
+            }
+            main.post { if (!ended) WidgetHost.slowdown = LiveHeat.widgetSlowdown(level) }
         }
         LiveState.update {
             it.copy(

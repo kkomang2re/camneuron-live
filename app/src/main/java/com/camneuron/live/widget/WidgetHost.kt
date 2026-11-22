@@ -41,6 +41,7 @@ import java.util.concurrent.CopyOnWriteArraySet
  * 웹 페이지를 소프트웨어로 다시 그리면 영상(video)은 빈 칸으로 나오기 때문이다. 복사가 안 되는 폰에서는 소프트웨어로
  * 다시 그리는 옛 방식으로 돌아간다 (영상만 안 보인다).
  * 위젯마다 따로, 그 페이지가 다시 그려졌을 때만 뜬다. 보통은 많아야 초당 10번, 움직임이 많은 후원 알림·영상 후원은 20번.
+ * 폰이 뜨거우면 [slowdown]만큼 더 드물게 뜬다.
  * 가상 화면 전체의 출력(ImageReader)은 투명도가 없어 쓰지 않는다.
  *
  * 창을 복사하므로 두 위젯의 자리가 겹치면 겹친 곳에는 서로의 그림이 함께 담긴다 (반투명한 곳이 조금 진해질 뿐이다).
@@ -93,6 +94,16 @@ object WidgetHost {
     private var copyFailures = 0
 
     private val settingsListener: (OverlaySettings) -> Unit = { main.post { applySettings(it) } }
+
+    /**
+     * 그림을 뜨는 간격에 곱하는 값 (1 이상). 폰이 뜨거우면 방송 세션이 늘린다 ([com.camneuron.live.LiveHeat]).
+     * 위젯을 뜨는 일(웹 페이지 그리기, 창 복사, 인코더에 올리기)도 GPU를 써서 폰을 데운다.
+     */
+    var slowdown = 1f
+        set(value) {
+            checkMain()
+            field = value.coerceAtLeast(1f)
+        }
 
     /** 지금 그림 (없으면 null). */
     fun latest(index: Int): Frame? = latest[index]
@@ -320,11 +331,12 @@ object WidgetHost {
         }
 
         private fun frameMs(): Long {
-            val current = item ?: return FRAME_MS
-            return when (WidgetLayout.kind(index, current)) {
+            val current = item
+            val base = when (current?.let { WidgetLayout.kind(index, it) }) {
                 WidgetLayout.Kind.ALERT, WidgetLayout.Kind.VIDEO -> MOTION_FRAME_MS
                 else -> FRAME_MS
             }
+            return (base * slowdown).toLong()
         }
 
         private val captureRunnable = Runnable {

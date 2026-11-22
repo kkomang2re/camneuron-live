@@ -1586,7 +1586,7 @@ class MainActivity : Activity() {
             } else {
                 getString(R.string.status_network, network)
             }
-            if (s.heatLevel > 0) lines += getString(R.string.status_heat)
+            if (s.heatLevel > 0) lines += getString(R.string.status_heat, s.heatLevel)
             if (s.netLevel > 0) lines += getString(R.string.status_net)
             s.micError?.let { lines += getString(R.string.status_no_mic, it) }
             if (s.coverUnavailable) lines += getString(R.string.status_cover_unavailable)

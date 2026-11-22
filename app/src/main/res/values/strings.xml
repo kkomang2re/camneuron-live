@@ -104,7 +104,7 @@
     <string name="status_live">● LIVE %1$s · %2$.1f Mbps</string>
     <string name="status_reconnecting">다시 연결하는 중… (%1$s)</string>
     <string name="status_failed">방송하지 못함: %1$s</string>
-    <string name="status_heat">폰이 뜨거워 화질을 낮춤</string>
+    <string name="status_heat">폰이 뜨거워 부담을 줄이는 중 (%1$d단계)</string>
     <string name="status_net">네트워크가 약해 화질을 낮춤</string>
     <string name="status_no_mic">마이크 없이 방송 중 (%1$s)</string>
     <string name="status_battery">배터리 %1$d%% · %2$.0f°C</string>

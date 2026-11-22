@@ -120,16 +120,25 @@ class VideoEncoder(
     }
 
     /**
-     * 영상 위에 그림 층을 얹는다 ([VideoEffects.setLayer]). [bitmap]은 이 함수가 맡는다.
-     * GPU 단계가 없는 기기면 false (그때 [bitmap]은 바로 recycle한다).
+     * 영상 위에 그림 층을 얹는다 ([VideoEffects.setLayer]). [owned]면 [bitmap]은 이 함수가 맡고, 아니면 부른 쪽이
+     * 계속 갖고 있되 바꾸지 않는다. GPU 단계가 없는 기기면 false (그때 맡은 [bitmap]은 바로 recycle한다).
      */
-    fun setLayer(index: Int, bitmap: android.graphics.Bitmap?, left: Float, top: Float, right: Float, bottom: Float, alpha: Float): Boolean {
+    fun setLayer(
+        index: Int,
+        bitmap: android.graphics.Bitmap?,
+        left: Float,
+        top: Float,
+        right: Float,
+        bottom: Float,
+        alpha: Float,
+        owned: Boolean = true,
+    ): Boolean {
         val stage = effects
         if (stage == null) {
-            bitmap?.recycle()
+            if (owned) bitmap?.recycle()
             return false
         }
-        stage.setLayer(index, bitmap, left, top, right, bottom, alpha)
+        stage.setLayer(index, bitmap, left, top, right, bottom, alpha, owned)
         return true
     }
 
