@@ -19,6 +19,9 @@ import com.camneuron.core.encode.Codecs
 import com.camneuron.core.encode.VideoEncoder
 import com.camneuron.core.net.NetGovernor
 import com.camneuron.live.chzzk.ChzzkChat
+import com.camneuron.live.chzzk.ChzzkLiveStatus
+import com.camneuron.live.chzzk.ChzzkPrefs
+import com.camneuron.live.chzzk.UrlConnectionTransport
 import com.camneuron.live.rtmp.Flv
 import com.camneuron.live.rtmp.RtmpException
 import com.camneuron.live.rtmp.RtmpPublisher
@@ -49,6 +52,9 @@ class LiveSession(
 ) : CameraEngine.Listener, CameraEngine.FacingHandler, AudioEncoder.Sink {
     private val thread = Thread(::run, "live-session")
     private val ticker = Thread(::tickLoop, "live-ticker")
+
+    /** 치지직에 방송이 떴는지와 시청자 수를 [WATCH_MS]마다 읽는다 (네트워크가 느려도 1초 틱을 막지 않게 따로 돈다). */
+    private val watcher = Thread(::watchLoop, "live-viewers").apply { isDaemon = true }
     private val lock = Object()
 
     @Volatile
@@ -108,6 +114,7 @@ class LiveSession(
         LiveState.update { LiveState.Status(phase = LiveState.Phase.CONNECTING, startedAtMs = SystemClock.elapsedRealtime()) }
         thread.start()
         ticker.start()
+        watcher.start()
     }
 
     fun stop() {
@@ -117,6 +124,7 @@ class LiveSession(
         streamer?.stop()
         if (thread !== Thread.currentThread()) thread.join(5000)
         ticker.interrupt()
+        watcher.interrupt()
     }
 
     private fun run() {
@@ -293,11 +301,13 @@ class LiveSession(
                 it.muted = LiveControls.audioMuted
                 it.start()
             }
+            AudioMeter.active = true
         }
     }
 
     private fun stopAudio() {
         val stopping = synchronized(audioLock) { audio.also { audio = null } }
+        AudioMeter.active = false
         stopping?.stop()
     }
 
@@ -312,13 +322,14 @@ class LiveSession(
         streamer?.onAudioFrame(pts, data)
     }
 
-    override fun onAudioLevel(peak: Float) = Unit
+    override fun onAudioLevel(peak: Float) = AudioMeter.push(peak)
 
     override fun onAudioError(encoder: AudioEncoder, message: String) {
         synchronized(audioLock) {
             if (audio !== encoder) return
             audio = null
         }
+        AudioMeter.active = false
         Log.w(TAG, "mic stopped: $message")
         LiveState.update { it.copy(micError = message) }
     }
@@ -455,8 +466,42 @@ class LiveSession(
         }
     }
 
+    // ------------------------------------------------------------------------------------------
+    // 치지직에 방송이 떴는지, 시청자 수
+
+    private fun watchLoop() {
+        val transport = UrlConnectionTransport(timeoutMs = WATCH_TIMEOUT_MS)
+        try {
+            Thread.sleep(FIRST_WATCH_MS)
+            while (!stopped) {
+                val channelId = ChzzkPrefs.channelId(context)
+                if (channelId.isNotEmpty()) {
+                    val status = ChzzkLiveStatus.fetch(transport, channelId)
+                    // 방송이 끝난 뒤에 늦게 온 답은 버린다.
+                    if (!stopped) {
+                        LiveState.update {
+                            if (it.phase == LiveState.Phase.IDLE) {
+                                it
+                            } else {
+                                val viewers = status?.takeIf { s -> s.open }?.viewers ?: -1
+                                it.copy(chzzkOpen = status?.open, viewers = viewers, peakViewers = maxOf(it.peakViewers, viewers))
+                            }
+                        }
+                    }
+                }
+                Thread.sleep(WATCH_MS)
+            }
+        } catch (_: InterruptedException) {
+        }
+    }
+
     companion object {
         private const val TAG = "LiveSession"
+
+        /** 치지직은 송출을 받고 몇 초 뒤에 방송을 연다. 처음은 조금 기다렸다 읽는다. */
+        private const val FIRST_WATCH_MS = 6_000L
+        private const val WATCH_MS = 10_000L
+        private const val WATCH_TIMEOUT_MS = 8_000
 
         private const val QUEUE_SECONDS = 2
         private const val RETRY_MS = 3_000L

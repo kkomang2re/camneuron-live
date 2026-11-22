@@ -82,6 +82,35 @@ class ChzzkApiTest {
     }
 
     @Test
+    fun twoApisSharingAStoreRefreshOnlyOnce() {
+        // 채팅과 화면이 따로 만든 ChzzkApi가 같은 저장소를 쓴다. 토큰이 만료된 채 둘이 동시에 부른다.
+        val store = MemoryTokenStore(ChzzkTokens("access1", "refresh1", clock + 60_000))
+        val tokenCalls = java.util.concurrent.atomic.AtomicInteger()
+        val slow = HttpTransport { _, url, _, _ ->
+            if (url.endsWith("/auth/v1/token")) {
+                if (tokenCalls.incrementAndGet() > 1) {
+                    // 실제 치지직처럼: 한 번 쓴 Refresh Token은 다시 못 쓴다.
+                    HttpTransport.Response(401, """{"code":401,"message":"INVALID_TOKEN"}""")
+                } else {
+                    Thread.sleep(150)
+                    HttpTransport.Response(200, """{"code":200,"content":{"accessToken":"access2","refreshToken":"refresh2","expiresIn":"86400"}}""")
+                }
+            } else {
+                HttpTransport.Response(200, """{"code":200,"content":{"streamKey":"k"}}""")
+            }
+        }
+        val results = java.util.Collections.synchronizedList(mutableListOf<Result<String>>())
+        val threads = (1..2).map {
+            val api = ChzzkApi(slow, "id", "secret", store, FakeTransport.BASE) { clock }
+            Thread { results += runCatching { api.streamKey() } }.also { it.start() }
+        }
+        threads.forEach { it.join(5_000) }
+        assertEquals(listOf("k", "k"), results.map { it.getOrThrow() })
+        assertEquals(1, tokenCalls.get())
+        assertEquals("refresh2", store.tokens?.refreshToken) // 로그인이 풀리지 않았다
+    }
+
+    @Test
     fun expiredRefreshTokenLogsOut() {
         transport.on("GET", "/open/v1/streams/key", 401, """{"code":401,"message":"INVALID_TOKEN"}""")
         transport.on("POST", "/auth/v1/token", 401, """{"code":401,"message":"INVALID_TOKEN"}""")

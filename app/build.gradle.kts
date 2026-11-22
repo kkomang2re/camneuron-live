@@ -1,5 +1,5 @@
 // 캠뉴런 라이브: PC 없이 폰에서 치지직으로 바로 RTMP 송출. 카메라·인코더·발열 조절은 이 프로젝트의 core 모듈에 있다
-// (캠뉴런에서 복사해 와 따로 관리한다). 이름·패키지·서명 키는 임시다 (출시 전에 정한다).
+// (캠뉴런에서 복사해 와 따로 관리한다). 출시하지 않고 혼자 쓰는 앱이라 디버그 빌드를 폰에 깔아 쓴다.
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -22,7 +22,7 @@ android {
             applicationIdSuffix = ".debug"
         }
         release {
-            // 서명 키는 아직 없다. 출시 준비 때 app 모듈처럼 keystore.properties로 붙인다.
+            // 쓰지 않는다 (출시하지 않는다). 서명 키도 없다.
             isMinifyEnabled = false
         }
     }

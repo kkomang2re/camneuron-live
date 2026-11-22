@@ -129,6 +129,7 @@ class LoginActivity : Activity() {
         }) { outcome ->
             outcome.onSuccess { (channel, key) ->
                 ChzzkPrefs.setChannelName(this, channel?.channelName)
+                ChzzkPrefs.setChannelId(this, channel?.channelId)
                 if (!key.isNullOrBlank()) LivePrefs.save(this, LivePrefs.serverUrl(this), key)
                 val name = channel?.channelName?.ifBlank { null } ?: getString(R.string.chzzk_unknown_channel)
                 val note = if (key.isNullOrBlank()) getString(R.string.chzzk_login_ok_no_key, name) else getString(R.string.chzzk_login_ok, name)

@@ -24,6 +24,12 @@ object LiveState {
         val micError: String? = null,
         /** 이 폰은 GPU 단계가 없어 화면 가리기를 할 수 없음. */
         val coverUnavailable: Boolean = false,
+        /** 치지직이 이 방송을 내보내는 중인지. null이면 아직 모름 (확인 전이거나 읽지 못함). */
+        val chzzkOpen: Boolean? = null,
+        /** 지금 시청자 수. 모르면 -1. */
+        val viewers: Int = -1,
+        /** 이 방송의 가장 많았던 시청자 수. */
+        val peakViewers: Int = 0,
     )
 
     private val main = Handler(Looper.getMainLooper())

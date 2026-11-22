@@ -33,7 +33,7 @@ class ChzzkApiException(val status: Int, val code: String?, message: String, val
  * 치지직 Open API (https://chzzk.gitbook.io/chzzk). 네트워크를 쓰므로 메인 스레드에서 부르지 않는다.
  *
  * 사용자 API는 Access Token으로 부르고, 만료됐거나(401) 곧 만료되면 Refresh Token으로 한 번 새로 받은 뒤 다시 부른다.
- * Refresh Token은 한 번만 쓸 수 있어 새로 받기는 한 번에 하나만 한다.
+ * Refresh Token은 한 번만 쓸 수 있어 새로 받기는 앱 전체에서 한 번에 하나만 한다 ([REFRESH_LOCK]).
  */
 class ChzzkApi(
     private val transport: HttpTransport,
@@ -45,8 +45,6 @@ class ChzzkApi(
     private val log: (String) -> Unit = {},
     private val now: () -> Long = System::currentTimeMillis,
 ) {
-    private val refreshLock = Any()
-
     // ------------------------------------------------------------------------------------------
     // 로그인
 
@@ -183,7 +181,7 @@ class ChzzkApi(
 
     /** [staleAccess]를 쓰다 실패한 경우에만 새로 받는다. 다른 스레드가 이미 새로 받았으면 그 토큰을 쓴다. */
     private fun refresh(staleAccess: String): String {
-        synchronized(refreshLock) { return refreshLocked(staleAccess) }
+        synchronized(REFRESH_LOCK) { return refreshLocked(staleAccess) }
     }
 
     private fun refreshLocked(staleAccess: String): String {
@@ -247,6 +245,14 @@ class ChzzkApi(
 
     companion object {
         const val BASE_URL = "https://openapi.chzzk.naver.com"
+
+        /**
+         * 토큰을 새로 받는 잠금. 채팅, 화면, 방송 세션이 저마다 [ChzzkApi]를 만들어 같은 토큰 저장소를 쓰므로 객체마다가
+         * 아니라 앱 전체에 하나다. 하루가 지나 토큰이 만료된 뒤 앱을 켜면 채팅과 화면이 동시에 새로 받으려 하는데,
+         * Refresh Token은 한 번만 쓸 수 있어 늦은 쪽이 거절당하고 로그인이 풀렸다. 이제 늦은 쪽은 기다렸다가
+         * 앞선 쪽이 받아 둔 토큰을 쓴다.
+         */
+        private val REFRESH_LOCK = Any()
         const val MAX_CHAT_LENGTH = 100
 
         /** [updateLiveSetting]에 주면 카테고리를 지운다. */
