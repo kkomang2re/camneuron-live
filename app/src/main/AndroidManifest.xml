@@ -24,14 +24,17 @@
         android:theme="@style/AppTheme">
 
         <!-- 가로 고정: 카메라 센서 영상이 이 방향일 때 바로 서므로 미리보기와 송출 영상이 같아진다 (캠뉴런과 같음).
-             singleTask: 아이콘·방송 알림을 다시 눌러도 화면이 하나만 있게 한다 (겹치면 뒤로 가기가 엉킨다). -->
+             singleTask: 아이콘·방송 알림을 다시 눌러도 화면이 하나만 있게 한다 (겹치면 뒤로 가기가 엉킨다).
+             supportsPictureInPicture: 방송 중에 앱을 벗어나면 방송 화면이 작은 창으로 남는다. 작은 창으로 바뀔 때 화면을
+             새로 만들지 않게 smallestScreenSize까지 직접 처리한다. -->
 
         <activity
             android:name=".MainActivity"
-            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden"
             android:exported="true"
             android:launchMode="singleTask"
             android:screenOrientation="landscape"
+            android:supportsPictureInPicture="true"
             android:windowSoftInputMode="adjustPan">
             <property
                 android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY"
@@ -48,6 +51,11 @@
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />
+
+        <!-- 방송하지 않는 채로 뒤에 오래 있으면 앱을 끄는 알람 (IdleExit). -->
+        <receiver
+            android:name=".IdleExitReceiver"
+            android:exported="false" />
 
         <service
             android:name=".LiveService"

@@ -3,12 +3,16 @@ package com.camneuron.live
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.PictureInPictureParams
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.Matrix
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.SurfaceTexture
 import android.graphics.Typeface
+import android.hardware.display.DisplayManager
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.style.ForegroundColorSpan
@@ -21,8 +25,10 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.window.OnBackInvokedDispatcher
+import android.util.Rational
 import android.util.Size
 import android.view.GestureDetector
+import android.view.Gravity
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.Surface
@@ -82,6 +88,31 @@ import kotlin.math.min
 class MainActivity : Activity() {
     private lateinit var engine: CameraEngine
     private lateinit var preview: TextureView
+
+    // 방송 화면(미리보기와 위젯)과 그 밖의 모든 것(버튼·상태·창). 작은 창(PiP)에서는 방송 화면만 보인다.
+    private lateinit var root: View
+    private lateinit var stage: View
+    private lateinit var chrome: View
+    private var pipSupported = false
+
+    /** 방송 중이라, 앱을 벗어나면 작은 창으로 가게 해 두었는지 (Android 12부터는 시스템에 미리 알려 둔다). */
+    private var pipArmed = false
+
+    /** 작은 창에서 방송 화면을 그릴 방향: 들어가기 전(가로 전체 화면)의 화면 방향. */
+    private var pipFrameRotation = Surface.ROTATION_90
+
+    /** 작은 창에서 방송 화면 틀을 돌려 놓은 횟수 (시계 방향 90도씩, [PipLayout.quarterTurns]). */
+    private var stageTurns = 0
+
+    /** 마지막으로 미리보기를 맞춘 틀의 상태 ([layoutStage]). 바뀌었을 때만 다시 맞춘다. */
+    private var stageKey = -1
+
+    /** 화면 방향이 바뀌면 (작은 창인 채로 홈 화면 ↔ 가로 앱) 방송 화면 틀을 다시 놓는다. */
+    private val displayListener = object : DisplayManager.DisplayListener {
+        override fun onDisplayChanged(displayId: Int) = layoutStage()
+        override fun onDisplayAdded(displayId: Int) = Unit
+        override fun onDisplayRemoved(displayId: Int) = Unit
+    }
     private lateinit var status: TextView
     private lateinit var liveButton: TextView
     private lateinit var settingsButton: TextView
@@ -288,6 +319,16 @@ class MainActivity : Activity() {
         engine = CameraEngine.get(this)
 
         preview = findViewById(R.id.preview)
+        root = findViewById(R.id.root)
+        stage = findViewById(R.id.stage)
+        chrome = findViewById(R.id.chrome)
+        pipSupported = packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
+        IdleExit.init(application)
+        // 창 크기가 바뀌면 (작은 창으로 갈 때, 작은 창의 화면비가 바뀔 때) 방송 화면 틀을 다시 놓는다.
+        // 배치하는 도중에 크기를 바꾸지 않게 다음 차례에 한다.
+        root.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+            if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) root.post { layoutStage() }
+        }
         status = findViewById(R.id.status)
         liveButton = findViewById(R.id.btn_live)
         settingsButton = findViewById(R.id.btn_settings)
@@ -443,7 +484,7 @@ class MainActivity : Activity() {
             dialog.setTitle(R.string.exit_live_title)
                 .setMessage(R.string.exit_live_message)
                 .setPositiveButton(R.string.exit_live_stop) { _, _ -> exitApp() }
-                .setNeutralButton(R.string.exit_background) { _, _ -> moveTaskToBack(true) }
+                .setNeutralButton(R.string.exit_background) { _, _ -> if (!enterPip()) moveTaskToBack(true) }
                 .setNegativeButton(R.string.btn_cancel, null)
         } else {
             dialog.setTitle(R.string.exit_title)
@@ -473,6 +514,106 @@ class MainActivity : Activity() {
                 }
             }
         }, EXIT_SETTLE_MS)
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // 작은 창 (PiP): 방송 중에 홈 화면이나 다른 앱으로 가면 방송 화면만 작은 창에 남는다
+
+    @Suppress("DEPRECATION")
+    private fun displayRotation(): Int =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) display?.rotation ?: Surface.ROTATION_0 else windowManager.defaultDisplay.rotation
+
+    /** 미리보기와 위젯을 그리는 틀의 방향. 평소에는 화면 방향이고, 작은 창에서는 들어가기 전의 방향이다. */
+    private fun stageRotation(): Int = if (isInPictureInPictureMode) pipFrameRotation else displayRotation()
+
+    /**
+     * 방송 화면 틀을 지금 창에 맞게 놓는다. 평소에는 창을 가득 채운다.
+     * 작은 창에서 화면 방향이 들어가기 전과 다르면 (가로로 방송하다 세로 홈 화면으로 나갔을 때) 틀을 그만큼 거꾸로 돌려,
+     * 폰을 든 채로 보면 방송 화면이 그대로 가로로 보이게 한다. 틀 안의 미리보기·위젯은 평소와 똑같이 그린다.
+     */
+    private fun layoutStage() {
+        val pip = isInPictureInPictureMode
+        val actual = displayRotation()
+        if (!pip && !isInMultiWindowMode && resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            pipFrameRotation = actual
+        }
+        val turns = if (pip) PipLayout.quarterTurns(pipFrameRotation, actual) else 0
+        val swap = PipLayout.swapsSides(turns)
+        val params = stage.layoutParams as FrameLayout.LayoutParams
+        val width = if (swap) root.height else ViewGroup.LayoutParams.MATCH_PARENT
+        val height = if (swap) root.width else ViewGroup.LayoutParams.MATCH_PARENT
+        if (params.width != width || params.height != height || params.gravity != Gravity.CENTER) {
+            params.width = width
+            params.height = height
+            params.gravity = Gravity.CENTER
+            stage.layoutParams = params
+        }
+        stage.rotation = turns * 90f
+        val turnsChanged = turns != stageTurns
+        stageTurns = turns
+        // 창의 화면비를 틀에 맞춘다 (세로 화면에서는 창이 9:16이어야 방송 화면이 창을 채운다).
+        if (pip && turnsChanged) applyPipParams()
+        val key = stageRotation() * 8 + turns * 2 + if (pip) 1 else 0
+        if (key != stageKey) {
+            stageKey = key
+            applyPreviewTransform()
+        }
+    }
+
+    private fun pipParams(): PictureInPictureParams {
+        val (w, h) = PipLayout.aspect(stageTurns)
+        val builder = PictureInPictureParams.Builder().setAspectRatio(Rational(w, h))
+        // 작은 창으로 줄어드는 동안 방송 화면 자리만 보이게 한다.
+        if (!isInPictureInPictureMode) pipSourceRect()?.let { builder.setSourceRectHint(it) }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) builder.setAutoEnterEnabled(pipArmed)
+        return builder.build()
+    }
+
+    /** 미리보기에서 영상이 그려진 자리 (창 좌표). */
+    private fun pipSourceRect(): Rect? {
+        val image = displayedImageRect() ?: return null
+        val origin = IntArray(2)
+        preview.getLocationInWindow(origin)
+        return Rect(
+            (origin[0] + image.left).toInt(), (origin[1] + image.top).toInt(),
+            (origin[0] + image.right).toInt(), (origin[1] + image.bottom).toInt(),
+        )
+    }
+
+    /** 작은 창 설정(화면비, 방송 중이면 저절로 들어가기)을 시스템에 알린다. 작은 창을 못 쓰는 폰이면 아무것도 하지 않는다. */
+    private fun applyPipParams() {
+        if (!pipSupported) return
+        runCatching { setPictureInPictureParams(pipParams()) }
+    }
+
+    /** 방송 중이면 작은 창으로 간다. 갔으면 true (폰이 지원하지 않거나 이 앱의 작은 창을 꺼 두었으면 false). */
+    private fun enterPip(): Boolean {
+        if (!pipSupported || isInPictureInPictureMode || LiveState.current.phase == LiveState.Phase.IDLE) return false
+        return runCatching { enterPictureInPictureMode(pipParams()) }.getOrDefault(false)
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        // Android 12부터는 시스템이 알아서 작은 창으로 보낸다 (setAutoEnterEnabled). 그 전 버전은 여기서 직접 들어간다.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) enterPip()
+    }
+
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        chrome.visibility = if (isInPictureInPictureMode) View.GONE else View.VISIBLE
+        if (isInPictureInPictureMode) {
+            if (editingWidgets) setEditingWidgets(false)
+            getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(root.windowToken, 0)
+        }
+        applyLock() // 잠가서 어둡게 해 둔 화면 밝기가 작은 창인 동안 폰 전체에 걸리지 않게
+        layoutStage()
+        // 다음에 들어갈 때는 다시 16:9에서 시작한다.
+        if (!isInPictureInPictureMode) applyPipParams()
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        layoutStage()
     }
 
     /**
@@ -556,6 +697,9 @@ class MainActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
+        chrome.visibility = if (isInPictureInPictureMode) View.GONE else View.VISIBLE
+        getSystemService(DisplayManager::class.java).registerDisplayListener(displayListener, main)
+        layoutStage()
         LiveState.addListener(stateListener)
         engine.addListener(engineListener)
         main.post(ticker)
@@ -598,6 +742,7 @@ class MainActivity : Activity() {
         ChzzkChat.removeListener(chatListener)
         ChzzkChat.release()
         setEditingWidgets(false)
+        getSystemService(DisplayManager::class.java).unregisterDisplayListener(displayListener)
         main.removeCallbacks(ticker)
         main.removeCallbacks(meterTicker)
         super.onStop()
@@ -700,8 +845,10 @@ class MainActivity : Activity() {
         lockOverlay.setBackgroundColor(if (dark) 0xFF000000.toInt() else 0x00000000)
         lockStatus.visibility = if (dark) View.VISIBLE else View.GONE
         lockHint.visibility = if (dark) View.VISIBLE else View.GONE
+        // 작은 창인 동안에는 낮추지 않는다 (작은 창의 밝기 설정이 폰 화면 전체에 걸린다).
+        val dim = dark && !isInPictureInPictureMode
         window.attributes = window.attributes.apply {
-            screenBrightness = if (dark) LOCK_BRIGHTNESS else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+            screenBrightness = if (dim) LOCK_BRIGHTNESS else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
         }
     }
 
@@ -846,7 +993,8 @@ class MainActivity : Activity() {
             w = viewWidth
             h = viewWidth / aspect
         }
-        val left = min(insetLeft.toFloat(), viewWidth - w).coerceAtLeast(0f)
+        // 작은 창에서는 버튼 줄이 없으니 가운데에 둔다.
+        val left = if (isInPictureInPictureMode) (viewWidth - w) / 2 else min(insetLeft.toFloat(), viewWidth - w).coerceAtLeast(0f)
         val top = (viewHeight - h) / 2
         return RectF(left, top, left + w, top + h)
     }
@@ -1555,6 +1703,10 @@ class MainActivity : Activity() {
 
     private fun render(s: LiveState.Status) {
         val idle = s.phase == LiveState.Phase.IDLE
+        if (pipArmed == idle) {
+            pipArmed = !idle
+            applyPipParams()
+        }
         arrangeButtons(live = !idle)
         liveButton.isActivated = !idle
         liveButton.setText(if (idle) R.string.btn_start else R.string.btn_stop_short)
@@ -1606,6 +1758,8 @@ class MainActivity : Activity() {
         val ended = idle && lastPhase != LiveState.Phase.IDLE
         lastPhase = s.phase // 아래에서 잠금을 풀면 render가 다시 불린다. 그때 또 "끝난 순간"으로 보지 않게 먼저 적는다.
         if (ended) {
+            // 작은 창은 방송 중에만 쓴다. 방송이 끝났으면 창을 닫는다 (다시 열면 준비 화면에 끝난 이유가 보인다).
+            if (isInPictureInPictureMode) moveTaskToBack(true)
             if (locked && lockedWhileLive) setLocked(false)
             val length = elapsed(lastStartedAtMs)
             val summary = if (lastPeakViewers > 0) {
@@ -1824,8 +1978,7 @@ class MainActivity : Activity() {
         val viewHeight = preview.height.toFloat()
         if (viewWidth == 0f || viewHeight == 0f) return
 
-        @Suppress("DEPRECATION")
-        val rotation = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) display?.rotation ?: 0 else windowManager.defaultDisplay.rotation
+        val rotation = stageRotation()
         val matrix = Matrix()
         val centerX = viewWidth / 2
         val centerY = viewHeight / 2
