@@ -3,12 +3,13 @@
 PC 없이 폰 하나로 치지직에 야외 방송을 하는 Android 앱. 폰 카메라·마이크를 RTMP로 치지직에 바로 보낸다.
 캠뉴런(폰을 OBS 캠으로 쓰는 앱)에서 갈라져 나왔고, 이제 따로 관리한다.
 
-**출시하지 않고 혼자 쓰는 앱이다.** 스토어에 올리지 않으며 디버그 빌드를 내 폰(Galaxy S25 Ultra)에 직접 깔아 쓴다.
+**출시하지 않고 혼자 쓰는 앱이다.** 스토어에 올리지 않으며 직접 서명한 릴리즈 빌드를 내 폰(Galaxy S25 Ultra)에 깔아 쓴다.
 그래서 처음 쓰는 사람을 위한 안내나 여러 기기 대응보다, 야외 방송에 실제로 필요한 것과 이 폰에서의 안정성을 먼저 본다.
 
 ## 야외 방송 기능
 
-- 송출: 1080p/720p, 30/60fps. 발열·네트워크에 따라 비트레이트를 알아서 낮추고, 끊기면 다시 연결한다.
+- 송출: 1080p/720p, 30/60fps. 폰이 뜨거우면 처리량(60→30fps, 위젯 그리기)을 줄이고, 네트워크가 약하면 비트레이트를
+  낮춘다. 폰 안에서 2초 넘게 밀린 영상은 버려 방송 지연이 쌓이지 않게 한다. 끊기면 다시 연결한다.
 - 방송 중 상태: 방송 시간, 보내는 속도, **치지직에 실제로 떴는지와 시청자 수**, 배터리·온도, **마이크 음량 막대**.
 - 조작: 마이크 끄기, 화면 가리기(자리 비움), 카메라 전환·줌·초점·노출·뷰티, 플래시, 손떨림 보정.
 - **화면 잠금**: 터치를 막고 화면을 어둡게 한다 (주머니·짐벌, 배터리·발열). 길게 눌러 푼다.
@@ -36,14 +37,23 @@ JDK 17과 Android SDK가 필요하다 (`local.properties`의 `sdk.dir`).
 gradlew testDebugUnitTest assembleDebug
 ```
 
-디버그 APK: `app/build/outputs/apk/debug/app-debug.apk` (패키지 `com.camneuron.live.debug`). 이것을 폰에 깔아 쓴다:
+디버그 APK: `app/build/outputs/apk/debug/app-debug.apk` (패키지 `com.camneuron.live.debug`). 시험용이다.
+빌드한 PC의 디버그 키(`~/.android/debug.keystore`)로 서명되어, 다른 PC에서 빌드한 것은 덮어 깔 수 없다.
+
+릴리즈 APK (폰에 두고 쓰는 것):
 
 ```
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+gradlew testReleaseUnitTest assembleRelease
+adb install -r app/build/outputs/apk/release/app-release.apk
 ```
 
-이 PC의 디버그 키(`~/.android/debug.keystore`)로 서명된다. 다른 PC에서 빌드한 것은 서명이 달라 덮어 깔 수 없고,
-지우고 다시 깔면 폰에 저장한 설정(스트림 키, 치지직 로그인, 위젯 주소)이 사라진다. 출시용 서명 키는 만들지 않는다.
+`app/build/outputs/apk/release/app-release.apk` (패키지 `com.camneuron.live`). 디버그와 다른 앱이라 함께 깔리고,
+설정(스트림 키, 치지직 로그인, 위젯 주소)도 따로 저장된다. 새 버전을 낼 때는 `app/build.gradle.kts`의
+`versionCode`·`versionName`을 올린다.
+
+릴리즈 서명 키는 저장소에 넣지 않는다 (`.gitignore`). 루트에 `keystore.properties`와 `keystore/camneuron-live-release.jks`가
+있으면 서명하고, 없으면 서명하지 않은 APK가 나온다 (폰에 깔 수 없다). 키를 잃으면 깔린 릴리즈 앱 위에 새 버전을 덮어 깔 수
+없고, 지우고 다시 깔면 폰에 저장한 설정이 사라진다. 그래서 키는 따로 보관한다.
 
 ## 테스트 도구
 
