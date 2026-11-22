@@ -91,4 +91,39 @@ class NetGovernorTest {
         assertEquals(1_500_000, NetGovernor.limitBitrate(3_000_000, 3))
         assertEquals(1_000_000, NetGovernor.limitBitrate(1_000_000, 3))
     }
+
+    @Test
+    fun maxLevelStopsLoweringAndRecoversWithoutTheResizeWait() {
+        val g = NetGovernor(maxLevel = 3)
+        var now = 0L
+        repeat(6) {
+            g.update(drops = 1, queueFill = 1f, nowMs = now)
+            now += NetGovernor.DOWN_INTERVAL_MS
+        }
+        assertEquals(3, g.level)
+        // 3단계에서는 해상도를 바꾸지 않았으니 15초 만에 한 단계 올린다 (4단계였다면 30초).
+        g.update(0, 0f, now)
+        assertTrue(g.update(0, 0f, now + NetGovernor.RECOVER_MS))
+        assertEquals(2, g.level)
+    }
+
+    @Test
+    fun baseRecoverMsSetsTheWaitAndStillBacksOff() {
+        val g = NetGovernor(maxLevel = 3, baseRecoverMs = 8_000)
+        g.update(drops = 1, queueFill = 1f, nowMs = 0)
+        g.update(drops = 1, queueFill = 1f, nowMs = 2_000)
+        assertEquals(2, g.level)
+        // 8초 좋으면 한 단계 올린다
+        g.update(0, 0f, 3_000)
+        assertFalse(g.update(0, 0f, 10_000))
+        assertTrue(g.update(0, 0f, 11_000))
+        assertEquals(1, g.level)
+        // 올리자마자 다시 밀리면 다음에는 두 배(16초)를 기다린다
+        assertTrue(g.update(drops = 1, queueFill = 1f, nowMs = 12_000))
+        assertEquals(2, g.level)
+        g.update(0, 0f, 13_000)
+        assertFalse(g.update(0, 0f, 13_000 + 8_000))
+        assertTrue(g.update(0, 0f, 13_000 + 16_000))
+        assertEquals(1, g.level)
+    }
 }

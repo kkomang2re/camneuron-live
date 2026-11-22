@@ -61,6 +61,9 @@ class RtmpStreamer(
 
     fun takeStats(): MediaQueue.Stats = queue.takeStats()
 
+    /** 비트레이트를 바꿨을 때 소켓 송신 버퍼도 맞춘다 ([RtmpPublisher.setSendBuffer]). */
+    fun setSendBuffer(bytes: Int) = publisher.setSendBuffer(bytes)
+
     /** 쓰기 하나가 [limitMs]보다 오래 막혀 있으면 true (네트워크가 사실상 끊김). */
     fun isStalled(nowMs: Long, limitMs: Long): Boolean {
         val started = writeStartedMs

@@ -187,4 +187,26 @@ class RtmpPublisherTest {
         streamer.stop()
         assertTrue(failures.isEmpty())
     }
+
+    @Test
+    fun sendBufferIsAQuarterSecondOfTheCurrentBitrate() {
+        assertEquals(140_625, RtmpPublisher.sendBufferFor(4_500_000))
+        assertEquals(250_000, RtmpPublisher.sendBufferFor(8_000_000))
+        // 네트워크가 약해 35%로 낮췄을 때: 바닥값
+        assertEquals(49_218, RtmpPublisher.sendBufferFor(1_575_000))
+        assertEquals(48 * 1024, RtmpPublisher.sendBufferFor(1_000_000))
+        assertEquals(256 * 1024, RtmpPublisher.sendBufferFor(20_000_000))
+    }
+
+    @Test
+    fun sendBufferCanBeChangedWhilePublishingAndAfterClose() {
+        startServer()
+        val publisher = RtmpPublisher(url(), "k", RtmpPublisher.sendBufferFor(4_500_000))
+        publisher.connect(5000)
+        publisher.setSendBuffer(RtmpPublisher.sendBufferFor(1_575_000))
+        publisher.send(ChunkWriter.CSID_VIDEO, RtmpMessage.VIDEO, 0, ByteArray(100_000))
+        assertEquals(100_000, generateSequence { nextMedia() }.first { it.type == RtmpMessage.VIDEO }.payload.size)
+        publisher.close()
+        publisher.setSendBuffer(100_000) // 닫힌 뒤에는 아무 일도 하지 않는다
+    }
 }

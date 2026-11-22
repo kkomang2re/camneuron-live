@@ -24,9 +24,9 @@ class RtmpPublisher(
     private val url: RtmpUrl,
     private val streamKey: String,
     /**
-     * 소켓 송신 버퍼 크기 (0이면 시스템 기본). 기본값은 LTE·5G에서 수 MB까지 자라, 업로드가 잠깐 느려지면 그만큼
-     * (낮춘 비트레이트로는 10초 넘게) 영상이 폰 안에 쌓인다. 앱 대기열은 그것이 다 찬 뒤에야 밀린 줄 알게 된다.
-     * 작게 정해 두면 밀림이 앱 대기열로 바로 올라와 거기서 시간으로 끊는다.
+     * 소켓 송신 버퍼 크기 (0이면 시스템 기본, 보통은 [sendBufferFor]). 기본값은 LTE·5G에서 수 MB까지 자라, 업로드가 잠깐
+     * 느려지면 그만큼 (낮춘 비트레이트로는 10초 넘게) 영상이 폰 안에 쌓인다. 앱 대기열은 그것이 다 찬 뒤에야 밀린 줄 알게 된다.
+     * 작게 정해 두면 밀림이 앱 대기열로 바로 올라와 거기서 시간으로 끊는다. 방송 중에는 [setSendBuffer]로 바꾼다.
      */
     private val sendBufferBytes: Int = 0,
     private val log: (String) -> Unit = {},
@@ -135,6 +135,15 @@ class RtmpPublisher(
             isDaemon = true
             start()
         }
+    }
+
+    /**
+     * 방송 중에 소켓 송신 버퍼 크기를 바꾼다. 비트레이트를 낮추면 같은 바이트가 더 긴 시간이 되므로 함께 줄인다
+     * ([sendBufferFor]). 아무 스레드에서나 불러도 된다. 줄이면 이미 쌓인 것이 빠질 때까지 다음 쓰기가 기다릴 뿐이다.
+     */
+    fun setSendBuffer(bytes: Int) {
+        if (bytes <= 0 || closed) return
+        runCatching { socket.sendBufferSize = bytes }.onFailure { log("send buffer not set: ${it.message}") }
     }
 
     /** 미디어나 데이터 메시지 하나를 보낸다. 한 스레드에서만 부른다. 연결이 끊기면 IOException. */
@@ -281,5 +290,16 @@ class RtmpPublisher(
         private const val OUTPUT_BUFFER = 64 * 1024
         private const val FLASH_VER = "FMLE/3.0 (compatible; FMSc/1.0)"
         private const val GOODBYE_TIMEOUT_MS = 1000L
+
+        private const val MIN_SEND_BUFFER = 48 * 1024
+        private const val MAX_SEND_BUFFER = 256 * 1024
+
+        /**
+         * 지금 [bitrate](bps)로 보낼 때 요청할 소켓 송신 버퍼 크기: 0.25초 분량. 리눅스(Android)는 요청한 값의 두 배를
+         * 잡으므로(관리용 몫 포함) 실제로는 0.3~0.5초 분량이 들어간다. 원래 비트레이트로 한 번 정해 두면, 비트레이트를
+         * 35%로 낮췄을 때 같은 바이트가 3초 가까이 된다 (PC에서 느린 망을 흉내 내 잰 값). 그래서 낮출 때마다 다시 정한다.
+         * 이보다 작게 하면 왕복 지연이 큰 망(0.3초 이상)에서 버퍼 때문에 속도가 안 나온다.
+         */
+        fun sendBufferFor(bitrate: Int): Int = (bitrate / 8 / 4).coerceIn(MIN_SEND_BUFFER, MAX_SEND_BUFFER)
     }
 }
