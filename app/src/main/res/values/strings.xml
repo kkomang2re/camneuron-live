@@ -123,6 +123,7 @@
     <string name="status_format">%1$s · 목표 %2$.1f Mbps</string>
     <string name="status_network">%1$s</string>
     <string name="status_network_drops">%1$s · 버린 프레임 %2$d</string>
+    <string name="status_send_delay">보내기 밀림 %1$.1f초 (업로드가 느림)</string>
     <string name="status_mic_muted">마이크 꺼짐</string>
     <string name="status_covered">화면 가림 중</string>
     <string name="status_cover_unavailable">이 폰에서는 화면 가리기를 할 수 없음</string>

@@ -143,7 +143,7 @@ class RtmpPublisherTest {
         val publisher = RtmpPublisher(url(), "k")
         publisher.connect(5000)
         val failures = mutableListOf<String>()
-        val streamer = RtmpStreamer(publisher, 1_000_000, onNeedKeyFrame = {}, onFailed = { failures += it })
+        val streamer = RtmpStreamer(publisher, 1_000_000, maxDelayMs = 2_000, onNeedKeyFrame = {}, onFailed = { failures += it })
         streamer.start()
 
         val sps = byteArrayOf(0x67, 0x42, 0x00, 0x1F, 0x11)

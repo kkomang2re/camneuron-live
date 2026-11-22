@@ -12,11 +12,13 @@ import java.nio.ByteBuffer
 class RtmpStreamer(
     private val publisher: RtmpPublisher,
     queueBytes: Int,
+    /** 대기열에서 이보다 오래 기다린 영상은 버린다 ([MediaQueue]). 방송이 폰 안에서 밀리는 상한. */
+    maxDelayMs: Long,
     onNeedKeyFrame: () -> Unit,
     private val onFailed: (String) -> Unit,
     private val log: (String) -> Unit = {},
 ) {
-    private val queue = MediaQueue(queueBytes, onNeedKeyFrame)
+    private val queue = MediaQueue(queueBytes, maxDelayMs, onNeedKeyFrame = onNeedKeyFrame)
     private val thread = Thread(::sendLoop, "rtmp-sender")
 
     @Volatile

@@ -23,6 +23,12 @@ class RtmpException(message: String, cause: Throwable? = null) : IOException(mes
 class RtmpPublisher(
     private val url: RtmpUrl,
     private val streamKey: String,
+    /**
+     * 소켓 송신 버퍼 크기 (0이면 시스템 기본). 기본값은 LTE·5G에서 수 MB까지 자라, 업로드가 잠깐 느려지면 그만큼
+     * (낮춘 비트레이트로는 10초 넘게) 영상이 폰 안에 쌓인다. 앱 대기열은 그것이 다 찬 뒤에야 밀린 줄 알게 된다.
+     * 작게 정해 두면 밀림이 앱 대기열로 바로 올라와 거기서 시간으로 끊는다.
+     */
+    private val sendBufferBytes: Int = 0,
     private val log: (String) -> Unit = {},
 ) : Closeable {
     private val socket = Socket()
@@ -44,6 +50,11 @@ class RtmpPublisher(
     val bytesSent: Long get() = if (::writer.isInitialized) writer.bytesWritten else 0L
 
     fun connect(timeoutMs: Int = CONNECT_TIMEOUT_MS) {
+        if (sendBufferBytes > 0) {
+            // 연결 전에 정한다. 정하면 시스템이 버퍼를 스스로 키우지 않는다.
+            runCatching { socket.sendBufferSize = sendBufferBytes }
+                .onFailure { log("send buffer not set: ${it.message}") }
+        }
         try {
             socket.connect(InetSocketAddress(url.host, url.port), timeoutMs)
         } catch (e: IOException) {

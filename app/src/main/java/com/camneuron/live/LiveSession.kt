@@ -152,7 +152,7 @@ class LiveSession(
         try {
             while (!stopped) {
                 connectionLost = null
-                val publisher = RtmpPublisher(url, streamKey) { Log.i(TAG, it) }
+                val publisher = RtmpPublisher(url, streamKey, sendBufferBytes(quality.bitrate)) { Log.i(TAG, it) }
                 var active: RtmpStreamer? = null
                 try {
                     connecting = publisher
@@ -162,6 +162,7 @@ class LiveSession(
                     active = RtmpStreamer(
                         publisher,
                         queueBytes = quality.bitrate / 8 * QUEUE_SECONDS,
+                        maxDelayMs = QUEUE_SECONDS * 1000L,
                         onNeedKeyFrame = { encoder?.requestKeyFrame() },
                         onFailed = { lose(it) },
                         log = { Log.i(TAG, it) },
@@ -459,8 +460,10 @@ class LiveSession(
 
         val active = streamer
         var kbps = 0
+        var sendDelayMs = 0L
         if (active != null) {
             val stats = active.takeStats()
+            sendDelayMs = stats.delayMs
             changed = net.update(stats.drops, stats.fill, now) || changed
             val sent = active.bytesSent
             val elapsed = if (lastTickMs > 0) now - lastTickMs else TICK_MS
@@ -491,6 +494,7 @@ class LiveSession(
         LiveState.update {
             it.copy(
                 sendKbps = kbps, targetKbps = targetBitrate / 1000, heatLevel = heat.level, netLevel = net.level,
+                sendDelayMs = sendDelayMs / 100 * 100, // 화면이 매 틱 바뀌지 않게 0.1초 단위로
                 droppedFrames = active?.droppedFrames ?: it.droppedFrames,
             )
         }
@@ -533,7 +537,16 @@ class LiveSession(
         private const val WATCH_MS = 10_000L
         private const val WATCH_TIMEOUT_MS = 8_000
 
+        /** 송신 대기열의 상한: 원래 비트레이트로 이만큼의 바이트, 그리고 (비트레이트를 낮췄어도) 이만큼의 시간. */
         private const val QUEUE_SECONDS = 2
+
+        /** 소켓 송신 버퍼: 원래 비트레이트로 0.5초 분량. 너무 작으면 지연이 큰 망에서 속도가 안 나온다. */
+        private const val SEND_BUFFER_DIVISOR = 2
+        private const val MIN_SEND_BUFFER = 128 * 1024
+        private const val MAX_SEND_BUFFER = 512 * 1024
+
+        fun sendBufferBytes(bitrate: Int): Int = (bitrate / 8 / SEND_BUFFER_DIVISOR).coerceIn(MIN_SEND_BUFFER, MAX_SEND_BUFFER)
+
         private const val RETRY_MS = 3_000L
         private const val TICK_MS = 1_000L
         private const val STALL_MS = 10_000L

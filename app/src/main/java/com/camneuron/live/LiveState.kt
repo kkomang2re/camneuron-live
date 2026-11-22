@@ -21,6 +21,8 @@ object LiveState {
         val droppedFrames: Int = 0,
         val heatLevel: Int = 0,
         val netLevel: Int = 0,
+        /** 보낼 차례를 기다리는 영상이 폰 안에서 밀린 시간 (지난 1초 중 가장 길었을 때). */
+        val sendDelayMs: Long = 0L,
         val micError: String? = null,
         /** 이 폰은 GPU 단계가 없어 화면 가리기를 할 수 없음. */
         val coverUnavailable: Boolean = false,

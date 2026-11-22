@@ -64,6 +64,70 @@ class MediaQueueTest {
     }
 
     @Test
+    fun waitingTooLong_dropsQueuedVideoEvenWithRoomLeft() {
+        var now = 0L
+        var keyRequests = 0
+        val queue = MediaQueue(1_000_000, maxDelayMs = 2_000, clockMs = { now }) { keyRequests++ }
+        assertTrue(queue.offer(item(MediaQueue.Kind.KEY_FRAME, 100)))
+        now = 1_000
+        assertTrue(queue.offer(item(MediaQueue.Kind.FRAME, 100)))
+        now = 2_000
+        assertTrue(queue.offer(item(MediaQueue.Kind.FRAME, 100))) // 딱 2초: 아직 괜찮다
+        assertEquals(0, keyRequests)
+
+        // 맨 앞이 2초 넘게 기다렸다 (업로드가 느리다). 자리는 넉넉해도 쌓인 영상을 버리고 키프레임부터 다시.
+        now = 2_001
+        assertFalse(queue.offer(item(MediaQueue.Kind.FRAME, 100)))
+        assertEquals(1, keyRequests)
+        assertEquals(4, queue.droppedFrames)
+        assertEquals(0, queue.queuedBytes())
+        assertFalse(queue.offer(item(MediaQueue.Kind.FRAME, 100)))
+        assertTrue(queue.offer(item(MediaQueue.Kind.KEY_FRAME, 100)))
+        assertTrue(queue.offer(item(MediaQueue.Kind.FRAME, 100)))
+    }
+
+    @Test
+    fun fillReportsTheFullerOfBytesAndDelay() {
+        var now = 0L
+        val queue = MediaQueue(1_000, maxDelayMs = 2_000, clockMs = { now })
+        assertTrue(queue.offer(item(MediaQueue.Kind.KEY_FRAME, 100))) // 바이트로는 10%
+        now = 1_500
+        val stats = queue.takeStats()
+        assertEquals(0.75f, stats.fill, 0.001f) // 시간으로는 75%
+        assertEquals(1_500L, stats.delayMs)
+
+        // 1.5초 기다린 뒤에 나갔다. 그 다음부터는 밀림이 없다.
+        queue.take(0)
+        assertEquals(1_500L, queue.takeStats().delayMs)
+        assertEquals(0L, queue.takeStats().delayMs)
+    }
+
+    @Test
+    fun withoutDelayLimitOnlyBytesCount() {
+        var now = 0L
+        val queue = MediaQueue(1_000, clockMs = { now })
+        assertTrue(queue.offer(item(MediaQueue.Kind.KEY_FRAME, 100)))
+        now = 60_000
+        assertTrue(queue.offer(item(MediaQueue.Kind.FRAME, 100)))
+        assertEquals(0.2f, queue.takeStats().fill, 0.001f)
+    }
+
+    @Test
+    fun audioDoesNotWaitBehindStaleVideo() {
+        var now = 0L
+        var keyRequests = 0
+        val queue = MediaQueue(1_000_000, maxDelayMs = 2_000, clockMs = { now }) { keyRequests++ }
+        assertTrue(queue.offer(item(MediaQueue.Kind.KEY_FRAME, 100)))
+        assertTrue(queue.offer(item(MediaQueue.Kind.FRAME, 100)))
+        now = 2_500
+        // 소리가 오면 밀린 영상을 버리고 소리는 넣는다. 다음 영상은 키프레임부터.
+        assertTrue(queue.offer(item(MediaQueue.Kind.AUDIO, 10)))
+        assertEquals(1, keyRequests)
+        assertEquals(10, queue.queuedBytes())
+        assertFalse(queue.offer(item(MediaQueue.Kind.FRAME, 100)))
+    }
+
+    @Test
     fun closeWakesTaker() {
         val queue = MediaQueue(10)
         val taker = Thread { assertNull(queue.take(5000)) }

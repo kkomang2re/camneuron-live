@@ -1581,6 +1581,7 @@ class MainActivity : Activity() {
             s.format?.let { lines += getString(R.string.status_format, "${it.height}p${it.fps}", s.targetKbps / 1000f) }
             val network = NetworkLabel.current(this)
             if (s.droppedFrames > 0) lines += getString(R.string.status_network_drops, network, s.droppedFrames)
+            if (s.sendDelayMs >= SHOW_SEND_DELAY_MS) lines += getString(R.string.status_send_delay, s.sendDelayMs / 1000f)
             lines += if (device.batteryPercent >= 0) {
                 getString(R.string.status_device, network, device.batteryPercent, device.temperatureC)
             } else {
@@ -1877,6 +1878,9 @@ class MainActivity : Activity() {
         private const val THERMAL_WARN = 2 // PowerManager.THERMAL_STATUS_MODERATE
         /** 잠금 화면의 밝기 (0~1). 0은 기기에 따라 화면이 꺼진 것처럼 되어 아주 낮은 값을 쓴다. */
         private const val LOCK_BRIGHTNESS = 0.01f
+
+        /** 폰 안에서 보내기가 이만큼 밀리면 상태에 보인다 (키프레임 하나를 보내는 동안의 짧은 밀림은 숨긴다). */
+        private const val SHOW_SEND_DELAY_MS = 500L
 
         // 마이크 음량 막대: 0.1초마다 그리고, 내려갈 때는 한 번에 이만큼씩. 이 길이를 넘으면(약 -6 dB) 너무 큰 소리로 본다.
         private const val METER_MS = 100L
