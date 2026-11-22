@@ -2,7 +2,8 @@
 #
 # 언제 도는가:
 #   - main에 올라올 때 (태그 build-<번호>로 올라간다)
-#   - apk-로 시작하는 태그를 올릴 때 (main이 아닌 가지에서 낼 때. 그 태그 이름으로 올라간다)
+#   - claude/release-apk-로 시작하는 가지에 올라올 때 (main에 합치기 전에 낼 때. 마찬가지로 build-<번호>)
+#   - apk-로 시작하는 태그를 올릴 때 (그 태그 이름으로 올라간다)
 #   - Actions 화면에서 직접 실행할 때
 #
 # 서명:
@@ -16,7 +17,7 @@ name: APK 빌드
 
 on:
   push:
-    branches: [main]
+    branches: [main, "claude/release-apk-*"]
     tags: ["apk-*"]
   workflow_dispatch:
 
