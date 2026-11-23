@@ -70,3 +70,10 @@ data class CameraCaps(
 )
 
 data class StreamFormat(val width: Int, val height: Int, val fps: Int)
+
+/**
+ * 프레임 하나를 내는 데 [minFrameDurationNs]가 걸리는 크기로 낼 수 있는 가장 높은 fps (33,333,333ns → 30).
+ * 카메라가 값을 알려 주지 않으면(0 이하) [fallback].
+ */
+fun maxFpsForFrameDuration(minFrameDurationNs: Long, fallback: Int): Int =
+    if (minFrameDurationNs <= 0) fallback else ((1_000_000_000L + minFrameDurationNs / 2) / minFrameDurationNs).toInt().coerceAtLeast(1)

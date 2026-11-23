@@ -29,14 +29,14 @@ import com.camneuron.live.rtmp.RtmpUrl
 import com.camneuron.live.widget.WidgetCanvas
 import com.camneuron.live.widget.WidgetHost
 import java.nio.ByteBuffer
-import kotlin.math.abs
 
 /**
  * 폰 카메라와 마이크를 RTMP 서버(치지직)로 바로 보낸다. 방송 하나에 하나, 자기 스레드에서 돈다.
  *
  * 연결이 끊기면 [RETRY_MS]마다 다시 붙는다 (야외에서는 모바일 데이터가 잠깐씩 끊긴다). 단, 처음 연결부터 실패하면
  * 주소나 스트림 키가 틀렸을 가능성이 크므로 다시 시도하지 않고 멈춘다 ([onEnded]에 이유).
- * 카메라를 바꾸거나 미리보기가 붙고 떨어지면 연결은 유지하고 인코더만 새로 만든다 (새 시퀀스 헤더를 보낸다).
+ * 카메라를 바꾸거나 미리보기가 붙고 떨어지면 연결은 유지하고 인코더만 새로 만든다. 영상 크기는 처음 정한 대로 지키고,
+ * 영상 시각은 인코더마다 다시 맞춘다 ([VideoClock]). 카메라를 바꾸지 못하면 이전 카메라로 돌아가 방송을 잇는다.
  * 네트워크([NetGovernor])가 약하면 비트레이트를 [quality]보다 낮춘다. 폰이 뜨거우면([HeatGovernor]) 처리량을 먼저
  * 줄인다 (60fps면 30fps로, 위젯 그림 뜨기를 드물게, 가장 뜨거울 때만 비트레이트를 조금. [LiveHeat]).
  * 방송 중에 해상도를 바꾸면 시청자 플레이어가 멈추는 경우가 있어 해상도는 바꾸지 않는다.
@@ -96,9 +96,18 @@ class LiveSession(
     private val audioLock = Any()
     private var audio: AudioEncoder? = null // audioLock
 
-    /** 영상 pts가 BOOTTIME 시계인지 (기기마다 다르다). 첫 프레임에서 정한다. 소리 pts(MONOTONIC)를 맞출 때 쓴다. */
+    /** 영상 시각을 소리와 같은 시계로 옮긴다. 세션 스레드 전용 (인코더 출력을 꺼내는 스레드). */
+    private val videoClock = VideoClock()
+
+    /** 이 방송의 영상 크기. 처음 정한 뒤에는 카메라를 바꿔도 지킨다 (방송 중에 크기가 바뀌면 시청자 플레이어가 멈춘다). 세션 스레드 전용. */
+    private var streamSize: StreamFormat? = null
+
+    /** 지금 인코더가 붙어 있는 카메라가 전면인지 (세션 스레드 전용). 카메라를 바꾸다 실패하면 이쪽으로 돌아간다. */
+    private var attachedFront: Boolean? = null
+
+    /** [LiveState.Status.cameraError]를 지울 시각 (SystemClock.elapsedRealtime). 0이면 보이는 것이 없다. */
     @Volatile
-    private var videoClockIsBoottime: Boolean? = null
+    private var cameraErrorUntilMs = 0L
 
     private val heat = HeatGovernor()
 
@@ -228,26 +237,28 @@ class LiveSession(
         while (!stopped && connectionLost == null) {
             restartRequested = false
             val useFront = front
-            val mime = VideoEncoder.MIME_AVC
-            val supports = { w: Int, h: Int -> VideoEncoder.findEncoder(mime, w, h) != null }
-            val fps = LiveHeat.fps(quality.fps, heat.level)
-            encoderFps = fps
-            val format = engine.resolveFormat(useFront, quality.width, quality.height, fps, supports)
-            val name = VideoEncoder.findEncoder(mime, format.width, format.height)
-                ?: error("H.264 인코더 없음 (${format.width}x${format.height})")
-            val next = VideoEncoder(
-                name, mime, format.width, format.height, format.fps, targetBitrate,
-                constantBitrate = true, keyFrameIntervalS = quality.keyFrameS,
-            )
-            try {
-                engine.attachEncoder(next.inputSurface, format, useFront)
+            val opened = try {
+                openEncoder(useFront)
             } catch (e: Exception) {
-                next.release()
-                throw e
+                // 카메라를 바꾸다 실패했다 (그 카메라를 열지 못하거나, 방송 크기로 찍지 못하는 폰). 연결을 끊고 다시 붙는 대신
+                // 이전 카메라로 돌아가 방송을 잇는다. 돌아가는 것도 실패하면 그때는 예전처럼 끊고 다시 연결한다.
+                val previous = attachedFront
+                if (stopped || connectionLost != null || previous == null || previous == useFront) throw e
+                Log.w(TAG, "camera switch failed, going back to the previous camera", e)
+                attachedFront = null
+                front = previous
+                cameraErrorUntilMs = SystemClock.elapsedRealtime() + CAMERA_ERROR_SHOW_MS
+                LiveState.update { it.copy(cameraError = e.message ?: e.javaClass.simpleName) }
+                continue
             }
+            val next = opened.first
+            val format = opened.second
             encoder?.release()
             encoder = next
             encoderFormat = format
+            attachedFront = useFront
+            if (streamSize == null) streamSize = format
+            videoClock.reset() // 카메라가 바뀌었으면 프레임에 찍히는 시각의 기준도 바뀌었을 수 있다
             applyCover(next, format)
             next.setBeauty(BeautyStore.current)
             // 새 인코더에는 위젯 층이 없다. 지금 그림을 다시 얹는다.
@@ -284,19 +295,59 @@ class LiveSession(
         }
     }
 
+    /**
+     * [useFront] 카메라에 붙은 새 인코더를 만든다. 이전 인코더는 그때까지 카메라에 붙어 있다 (부른 쪽이 그 뒤에 해제한다).
+     * 실패하면 예외를 던진다. 그때 이전 인코더는 더 이상 카메라에서 프레임을 받지 못할 수 있다.
+     */
+    private fun openEncoder(useFront: Boolean): Pair<VideoEncoder, StreamFormat> {
+        val mime = VideoEncoder.MIME_AVC
+        val supports = { w: Int, h: Int -> VideoEncoder.findEncoder(mime, w, h) != null }
+        val fps = LiveHeat.fps(quality.fps, heat.level)
+        encoderFps = fps
+        val size = streamSize
+        val format = if (size == null) {
+            engine.resolveFormat(useFront, quality.width, quality.height, fps, supports)
+        } else {
+            engine.resolveFormat(useFront, size.width, size.height, fps, supports, keepSize = true)
+        }
+        val name = VideoEncoder.findEncoder(mime, format.width, format.height)
+            ?: error("H.264 인코더 없음 (${format.width}x${format.height})")
+        val create = {
+            VideoEncoder(
+                name, mime, format.width, format.height, format.fps, targetBitrate,
+                constantBitrate = true, keyFrameIntervalS = quality.keyFrameS,
+            )
+        }
+        val next = try {
+            create()
+        } catch (e: Exception) {
+            // 같은 크기의 하드웨어 인코더를 둘 띄우지 못하는 폰이 있다. 이전 것을 먼저 놓고 다시 만든다
+            // (그동안 영상이 조금 더 길게 빈다).
+            val old = encoder ?: throw e
+            Log.w(TAG, "could not create a second encoder, releasing the old one first", e)
+            runCatching { engine.detachEncoder() }
+            old.release()
+            encoder = null
+            encoderFormat = null
+            create()
+        }
+        try {
+            engine.attachEncoder(next.inputSurface, format, useFront)
+        } catch (e: Exception) {
+            next.release()
+            throw e
+        }
+        return next to format
+    }
+
     private fun onVideo(active: RtmpStreamer, config: Boolean, keyFrame: Boolean, ptsUs: Long, data: ByteBuffer) {
         val bytes = ByteArray(data.remaining()).also { data.get(it) }
         if (config) {
             active.onVideoConfig(bytes)
             return
         }
-        if (videoClockIsBoottime == null) {
-            val boottime = SystemClock.elapsedRealtimeNanos() / 1000
-            val monotonic = System.nanoTime() / 1000
-            videoClockIsBoottime = abs(boottime - ptsUs) < abs(monotonic - ptsUs)
-            Log.i(TAG, "video pts clock: ${if (videoClockIsBoottime == true) "BOOTTIME" else "MONOTONIC"}")
-        }
-        active.onVideoFrame(ptsUs, bytes, keyFrame)
+        val pts = videoClock.toMonotonic(ptsUs, System.nanoTime() / 1000, SystemClock.elapsedRealtimeNanos() / 1000)
+        active.onVideoFrame(pts, bytes, keyFrame)
     }
 
     private fun lose(reason: String) {
@@ -330,10 +381,8 @@ class LiveSession(
     }
 
     override fun onAudioPacket(ptsUs: Long, data: ByteBuffer) {
-        // 소리 pts는 MONOTONIC이다. 영상 시계로 바꾼다. 영상 시계를 정하기 전의 소리는 버린다.
-        val boottime = videoClockIsBoottime ?: return
-        val pts = if (boottime) ptsUs + (SystemClock.elapsedRealtimeNanos() - System.nanoTime()) / 1000 else ptsUs
-        streamer?.onAudioFrame(pts, data)
+        // 소리 pts는 MONOTONIC이고 영상도 그 시계로 옮겨 보낸다 ([VideoClock]). 첫 영상보다 앞선 소리는 보내는 쪽이 버린다.
+        streamer?.onAudioFrame(ptsUs, data)
     }
 
     override fun onAudioLevel(peak: Float) = AudioMeter.push(peak)
@@ -483,6 +532,10 @@ class LiveSession(
             encoder?.setBitrate(targetBitrate)
             active?.setSendBuffer(RtmpPublisher.sendBufferFor(targetBitrate))
         }
+        if (cameraErrorUntilMs != 0L && now >= cameraErrorUntilMs) {
+            cameraErrorUntilMs = 0L
+            LiveState.update { it.copy(cameraError = null) }
+        }
         if (heatChanged) {
             val level = heat.level
             val fps = LiveHeat.fps(quality.fps, level)
@@ -540,6 +593,8 @@ class LiveSession(
         private const val WATCH_TIMEOUT_MS = 8_000
 
 
+        /** 카메라를 바꾸지 못했다는 줄을 상태에 보이는 시간. */
+        private const val CAMERA_ERROR_SHOW_MS = 15_000L
         private const val RETRY_MS = 3_000L
         private const val TICK_MS = 1_000L
         private const val STALL_MS = 10_000L

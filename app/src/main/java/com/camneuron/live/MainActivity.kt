@@ -1742,6 +1742,7 @@ class MainActivity : Activity() {
             if (s.heatLevel > 0) lines += getString(R.string.status_heat, s.heatLevel)
             if (s.netLevel > 0) lines += getString(R.string.status_net)
             s.micError?.let { lines += getString(R.string.status_no_mic, it) }
+            s.cameraError?.let { lines += getString(R.string.status_camera_switch_failed, it) }
             if (s.coverUnavailable) lines += getString(R.string.status_cover_unavailable)
         } else if (device.batteryPercent >= 0) {
             lines += getString(R.string.status_battery, device.batteryPercent, device.temperatureC)

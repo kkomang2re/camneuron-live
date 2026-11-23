@@ -182,8 +182,19 @@ class CameraEngine private constructor(context: Context) {
         }
     }
 
-    /** 요청과 가장 가까우면서 카메라와 인코더([encoderSupports])가 모두 지원하는 형식을 고른다. */
-    fun resolveFormat(front: Boolean, width: Int, height: Int, fps: Int, encoderSupports: (Int, Int) -> Boolean): StreamFormat {
+    /**
+     * 요청과 가장 가까우면서 카메라와 인코더([encoderSupports])가 모두 지원하는 형식을 고른다.
+     * [keepSize]면 크기는 꼭 [width]x[height]여야 하고 (방송 중에 카메라를 바꿀 때: 크기가 바뀌면 시청자 플레이어가 멈춘다),
+     * 그 크기로 낼 수 있는 만큼만 fps를 낮춘다. 이 카메라가 그 크기를 내지 못하면 예외를 던진다.
+     */
+    fun resolveFormat(
+        front: Boolean,
+        width: Int,
+        height: Int,
+        fps: Int,
+        encoderSupports: (Int, Int) -> Boolean,
+        keepSize: Boolean = false,
+    ): StreamFormat {
         val id = cameraIdFor(front) ?: throw IOException("no camera")
         val chars = manager.getCameraCharacteristics(id)
         val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
@@ -191,6 +202,13 @@ class CameraEngine private constructor(context: Context) {
 
         val sizes = map.getOutputSizes(MediaCodec::class.java).filter { encoderSupports(it.width, it.height) }
         if (sizes.isEmpty()) throw IOException("no usable video size")
+        if (keepSize) {
+            val same = sizes.firstOrNull { it.width == width && it.height == height }
+                ?: throw IOException("이 카메라는 ${width}x$height 영상을 내지 못함")
+            // 전면 카메라는 같은 크기라도 60fps가 안 되는 경우가 많다.
+            val maxFps = maxFpsForFrameDuration(map.getOutputMinFrameDuration(MediaCodec::class.java, same), fps)
+            return StreamFormat(same.width, same.height, pickFpsRange(chars, minOf(fps, maxFps)).upper)
+        }
         // 요청한 fps를 낼 수 있는 크기를 우선한다.
         val fastEnough = sizes.filter {
             val minDuration = map.getOutputMinFrameDuration(MediaCodec::class.java, it)

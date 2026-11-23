@@ -31,6 +31,9 @@ class RtmpStreamer(
     private var sps: ByteArray? = null
     private var pps: ByteArray? = null
     private var sequenceHeaderSent = false
+
+    /** 새 인코더의 첫 프레임을 기다리는 중. 키프레임이 올 때까지의 프레임은 버린다. */
+    private var awaitingKeyFrame = false
     private var lastVideoMs = 0L
 
     // 소리 스레드 전용
@@ -74,15 +77,23 @@ class RtmpStreamer(
         queue.offer(MediaQueue.Item(MediaQueue.Kind.ESSENTIAL, ChunkWriter.CSID_DATA, RtmpMessage.DATA_AMF0, 0, payload))
     }
 
-    /** 인코더의 설정 버퍼 (Annex-B SPS·PPS). 인코더를 새로 만들 때마다 다시 온다. */
+    /**
+     * 인코더의 설정 버퍼 (Annex-B SPS·PPS). 인코더를 새로 만들 때마다 (카메라 전환 등) 다시 온다.
+     * SPS·PPS가 전과 같으면 시퀀스 헤더를 다시 보내지 않는다: 서버와 플레이어에는 영상이 잠깐 비었다 키프레임으로
+     * 이어지는 것으로만 보인다. 달라졌을 때만 (프레임 수가 바뀐 경우 등) 새 헤더를 보낸다.
+     */
     fun onVideoConfig(annexB: ByteArray) {
         takeParameterSets(annexB)
-        sequenceHeaderSent = false
+        awaitingKeyFrame = true
     }
 
     fun onVideoFrame(ptsUs: Long, annexB: ByteArray, keyFrame: Boolean) {
         // 설정 버퍼 없이 키프레임 안에 SPS·PPS를 넣는 인코더도 있다.
-        if (keyFrame && (sps == null || pps == null || !sequenceHeaderSent)) takeParameterSets(annexB)
+        if (keyFrame && (sps == null || pps == null || !sequenceHeaderSent || awaitingKeyFrame)) takeParameterSets(annexB)
+        if (awaitingKeyFrame) {
+            if (!keyFrame) return
+            awaitingKeyFrame = false
+        }
         if (!sequenceHeaderSent) {
             if (!keyFrame) return // 시퀀스 헤더 뒤의 첫 프레임은 키프레임이어야 한다
             val s = sps ?: return
