@@ -41,6 +41,13 @@ object WidgetLayout {
     /** 후원이 차례로 나오는 위젯인지 (후원 알림, 영상 후원). 재생 중인 것을 넘기는 대상이다. */
     fun isDonation(kind: Kind): Boolean = kind == Kind.ALERT || kind == Kind.VIDEO
 
+    /**
+     * 후원의 재생 시간을 위젯 페이지가 아니라 서버가 재는 위젯인지. 치지직 영상 후원(chzzk.naver.com/video-donation/…)이 그렇다:
+     * 페이지의 시계를 감아도 넘어가지 않았고, 영상을 끝으로 넘기면 처음부터 다시 재생됐다 (폰에서 확인).
+     * 이런 위젯은 넘길 때 가리고 소리만 끈 채 서버가 다음 후원을 보내기를 기다린다.
+     */
+    fun isServerTimed(url: String): Boolean = "chzzk.naver.com/video-donation" in url.lowercase()
+
     /** 칸이 어떤 위젯인지. 브라우저 소스는 이름을 먼저, 없으면 주소를 본다 (예: toon.at/widget/alertbox → 후원 알림). */
     fun kind(index: Int, item: OverlayItem): Kind = when (index) {
         WidgetHost.CHAT -> Kind.CHAT

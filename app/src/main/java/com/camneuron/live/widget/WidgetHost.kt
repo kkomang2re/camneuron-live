@@ -162,17 +162,21 @@ object WidgetHost {
     }
 
     /**
-     * 후원 위젯에서 지금 나오는 후원을 넘긴다. 후원 위젯은 후원마다 정해진 시간이 지나야 다음으로 넘어가므로 (영상 후원은
-     * 영상이 끝나도 산 시간이 남았으면 되풀이한다), 페이지의 시계를 빨리 감아 페이지가 스스로 넘어가게 한다 (몇 초 걸린다).
-     * 페이지는 그대로라서 밀려 있던 다음 후원이 이어서 나온다. [onResult]에 대상 위젯 수와 넘기기 시작한 위젯 수를 알린다
-     * (메인 스레드). 나오는 후원이 없는 위젯은 시작하지 않는다.
+     * 후원 위젯에서 지금 나오는 후원을 넘긴다. 누르는 즉시 그 위젯을 가리고 소리를 끈 뒤 (방송 화면에서 바로 사라진다),
+     * 후원이 바뀌면 다시 보인다. 페이지는 그대로라서 밀려 있던 다음 후원이 이어서 나온다.
+     * - 후원마다 정해진 시간이 지나야 넘어가는 위젯은 페이지의 시계를 빨리 감아 바로 넘어가게 한다 (1~2초).
+     * - 재생 시간을 서버가 재는 위젯([WidgetLayout.isServerTimed], 치지직 영상 후원)은 앞당길 수 없다. 가린 채로 서버가
+     *   다음 후원을 보내기를 기다린다.
+     * [onResult]에 대상 위젯 수와 넘기기 시작한 위젯 수를 알린다 (메인 스레드). 나오는 후원이 없는 위젯은 시작하지 않는다.
      *
-     * 대상은 후원 알림·영상 후원 위젯이고, 이름으로 알아볼 수 없으면 채팅창이 아닌 모든 위젯이다.
+     * 대상은 후원 알림·영상 후원 위젯이고, 이름으로 알아볼 수 없으면 채팅창이 아닌 모든 위젯이다 (그때는 가리지 않는다).
      */
     fun skipDonation(onResult: (widgets: Int, started: Int) -> Unit) {
         checkMain()
         val active = slots.filterNotNull()
-        val targets = active.filter { it.isDonation() }.ifEmpty { active.filter { !it.isChat() } }
+        val donations = active.filter { it.isDonation() }
+        val targets = donations.ifEmpty { active.filter { !it.isChat() } }
+        val hide = donations.isNotEmpty()
         val script = pageScript()
         if (targets.isEmpty() || script == null) {
             onResult(targets.size, 0)
@@ -182,7 +186,7 @@ object WidgetHost {
         var started = 0
         for (slot in targets) {
             // 스크립트를 함께 넣는다: 페이지를 불러올 때 넣지 못했어도 (이때부터 거는 타이머는) 넘길 수 있다.
-            slot.evaluate("$script\nwindow.__camneuronTime.skip()") { result ->
+            slot.evaluate("$script\nwindow.__camneuronTime.skip($hide, ${slot.isServerTimed()})") { result ->
                 if (result?.contains("started") == true || result?.contains("busy") == true) started++
                 if (--waiting == 0) onResult(targets.size, started)
             }
@@ -386,6 +390,8 @@ object WidgetHost {
             val current = item ?: return false
             return WidgetLayout.isDonation(WidgetLayout.kind(index, current))
         }
+
+        fun isServerTimed(): Boolean = WidgetLayout.isServerTimed(loadedUrl.orEmpty())
 
         fun isChat(): Boolean {
             val current = item ?: return false

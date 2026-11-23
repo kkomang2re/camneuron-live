@@ -220,7 +220,7 @@
     <string name="btn_widget_done">조정 끝</string>
     <string name="btn_widget_skip">후원 넘기기</string>
     <string name="btn_widget_reload">새로고침</string>
-    <string name="toast_widget_skipped">지금 나오는 후원을 넘기는 중입니다 (몇 초). 그대로면 한 번 더 누르거나 \"새로고침\"</string>
+    <string name="toast_widget_skipped">지금 나오는 후원을 가리고 넘깁니다. 다음 후원이 시작되면 다시 보입니다 (계속 안 보이면 \"새로고침\")</string>
     <string name="toast_widget_skip_nothing">지금 나오는 후원이 없습니다. 멈춰 보이면 \"새로고침\"을 누르세요</string>
     <string name="toast_widget_skip_none">켜 둔 후원 위젯이 없습니다</string>
     <string name="toast_widget_reloaded">위젯 %1$d개를 새로고침했습니다</string>

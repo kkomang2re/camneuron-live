@@ -22,6 +22,10 @@ function wav(seconds) {
 const common = `
 window.log = []; window.queue = ['a', 'b', 'c']; window.current = null; window.DURATION = 30000;
 function started(id) { window.current = id; window.log.push([id, Date.now()]); }
+// 다른 사이트의 플레이어가 받은 명령 (플레이어가 되돌려 알려 준다)
+window.commands = [];
+window.addEventListener('message', function (e) { try { var d = JSON.parse(e.data); if (d.echo) window.commands.push(d.echo); } catch (x) {} });
+var serverTimer = window.setTimeout.bind(window); // 스크립트를 넣기 전의 타이머: 페이지가 손댈 수 없는 것(서버)을 대신한다
 `;
 const pages = {
   // 영상을 산 시간만큼 되풀이해 돌리고 타이머로 넘어간다 (치지직 영상 후원처럼)
@@ -84,10 +88,22 @@ const pages = {
     }
     window.begin = function () { setTimeout(function () { window.refreshed = true; }, 3600000); next(); };
   </script></body>`,
+  // 재생 시간을 서버가 재는 방식 (치지직 영상 후원으로 보이는 것): 페이지의 시계를 감아도 넘어가지 않는다.
+  // 10초 뒤에 서버가 다음 영상을 보낸다. 그때까지는 가려져 있어야 하고, 다음 영상은 다시 보여야 한다.
+  server: `<body><iframe id="p" src="PLAYER"></iframe><script>${common}
+    window.DURATION = 10000;
+    function next() {
+      var id = window.queue.shift(); if (!id) { window.current = null; return; }
+      document.getElementById('p').contentWindow.postMessage(JSON.stringify({ load: id }), '*'); started(id);
+      serverTimer(next, window.DURATION);
+    }
+    window.begin = next;
+  </script></body>`,
 };
 const playerFrame = `<script>
 window.addEventListener('message', function (e) {
   var d; try { d = JSON.parse(e.data); } catch (x) { return; }
+  if (d.event === 'command') parent.postMessage(JSON.stringify({ echo: d.func }), '*');
   if (d.load) setTimeout(function () {
     parent.postMessage(JSON.stringify({ event: 'onStateChange', info: -1 }), '*');
     parent.postMessage(JSON.stringify({ event: 'infoDelivery', info: { videoData: { video_id: d.load } } }), '*');
@@ -101,7 +117,8 @@ window.addEventListener('message', function (e) {
     s.listen(0, '127.0.0.1', () => resolve(s));
   });
   const other = await serve(() => playerFrame); // 다른 포트 = 다른 사이트
-  const main = await serve(url => (pages[url.slice(1)] || '<body></body>').replace('PLAYER', `http://127.0.0.1:${other.address().port}/`));
+  // 플레이어 주소는 유튜브 플레이어처럼 보이게 한다 (스크립트가 주소로 알아본다)
+  const main = await serve(url => (pages[url.slice(1)] || '<body></body>').replace('PLAYER', `http://127.0.0.1:${other.address().port}/youtube.com/embed/x`));
   const base = `http://127.0.0.1:${main.address().port}/`;
   const browser = await chromium.launch({ args: ['--autoplay-policy=no-user-gesture-required'] });
   const results = [];
@@ -145,7 +162,7 @@ window.addEventListener('message', function (e) {
   }
 
   // --- 후원을 넘기는 여러 방식
-  for (const kind of ['loop', 'countdown', 'clock', 'alert', 'player', 'ended']) {
+  for (const kind of ['loop', 'countdown', 'clock', 'alert', 'player', 'ended', 'server']) {
     const page = await browser.newPage();
     await page.goto(base + kind);
     await page.evaluate(script); // 앱처럼: 페이지를 다 불러온 뒤에 넣는다
@@ -153,7 +170,15 @@ window.addEventListener('message', function (e) {
     await page.waitForFunction(() => window.current === 'a');
     await page.waitForTimeout(700); // 'a'가 조금 나온 뒤에
     const t0 = Date.now();
-    const answer = await page.evaluate(() => window.__camneuronTime.skip());
+    const answer = await page.evaluate(() => window.__camneuronTime.skip(true));
+    const opacity = () => page.evaluate(() => getComputedStyle(document.documentElement).opacity);
+    check(`${kind}: the page is hidden as soon as skip is pressed`, await opacity() === '0' || await page.evaluate(() => window.current !== 'a'));
+    if (kind === 'server') {
+      // 서버가 재는 시간은 감을 수 없다: 3초 뒤에도 같은 후원이고, 가려진 채 소리가 꺼져 있다
+      await page.waitForTimeout(3000);
+      const mid = await page.evaluate(() => ({ current: window.current, hidden: window.__camneuronTime.hidden(), commands: window.commands.slice() }));
+      check('server: the donation cannot be shortened, but it stays hidden and muted', mid.current === 'a' && mid.hidden && await opacity() === '0' && mid.commands.includes('mute') && !mid.commands.includes('unMute'), JSON.stringify(mid));
+    }
     await page.waitForFunction(() => window.current === 'b' && !window.__camneuronTime.skipping(), null, { timeout: 15000 }).catch(() => {});
     const took = Date.now() - t0;
     const st = await page.evaluate(() => ({
@@ -168,11 +193,37 @@ window.addEventListener('message', function (e) {
     check(`${kind}: the current donation is skipped, the next one starts, the rest stay queued`,
       answer === 'started' && st.current === 'b' && st.queue === 'c' && !st.skipping, `answer ${answer}, current ${st.current}, queue [${st.queue}], took ${took} ms`);
     check(`${kind}: the next donation keeps its time (lost ${bUsed} ms of ${st.duration})`, bUsed >= 0 && bUsed <= 2600);
+    check(`${kind}: the page is visible again for the next donation`, await opacity() === '1' && !(await page.evaluate(() => window.__camneuronTime.hidden())));
     if (kind === 'player') check('player: unrelated far-off timers are not fired', !st.refreshed);
+    if (kind === 'player' || kind === 'server') {
+      const commands = await page.evaluate(() => window.commands);
+      check(`${kind}: the player is muted while hidden and unmuted for the next donation`, commands.indexOf('mute') >= 0 && commands.lastIndexOf('unMute') > commands.indexOf('mute'), commands.join(','));
+    }
+    if (kind === 'server') check('server: the next donation came when the server sent it (about 10 s)', took > 8500 && took < 12500, took + ' ms');
     // 다음 후원은 제 속도로 흐른다: 1초 뒤에도 여전히 'b'
     await page.waitForTimeout(1000);
     const later = await page.evaluate(() => window.current);
     check(`${kind}: after the skip time runs normally again`, later === 'b', later);
+    await page.close();
+  }
+
+  // --- 서버가 시간을 재는 것으로 알려진 위젯: 시계를 감지 않고, 영상을 끝으로 넘기지도 않고, 가린 채로 기다리기만 한다
+  {
+    const page = await browser.newPage();
+    await page.goto(base + 'server');
+    await page.evaluate(script);
+    await page.evaluate(() => window.begin());
+    await page.waitForFunction(() => window.current === 'a');
+    await page.waitForTimeout(700);
+    const answer = await page.evaluate(() => window.__camneuronTime.skip(true, true));
+    await page.waitForTimeout(2000);
+    const mid = await page.evaluate(() => ({ current: window.current, hidden: window.__camneuronTime.hidden(), offset: window.__camneuronTime.offset(), commands: window.commands.slice(), opacity: getComputedStyle(document.documentElement).opacity }));
+    check('wait only: hidden and muted at once, the clock is not wound, the video is not sought', answer === 'started' && mid.current === 'a' && mid.hidden && mid.opacity === '0' && mid.offset === 0 && mid.commands.includes('mute') && !mid.commands.includes('seekTo'), JSON.stringify(mid));
+    const again = await page.evaluate(() => window.__camneuronTime.skip(true, true));
+    check('wait only: pressing again while waiting changes nothing', again === 'busy', again);
+    await page.waitForFunction(() => window.current === 'b' && !window.__camneuronTime.skipping(), null, { timeout: 15000 }).catch(() => {});
+    const end = await page.evaluate(() => ({ current: window.current, queue: window.queue.join(), commands: window.commands.slice(), opacity: getComputedStyle(document.documentElement).opacity }));
+    check('wait only: visible and unmuted again when the server sends the next donation', end.current === 'b' && end.queue === 'c' && end.opacity === '1' && end.commands[end.commands.length - 1] === 'unMute', JSON.stringify(end));
     await page.close();
   }
 

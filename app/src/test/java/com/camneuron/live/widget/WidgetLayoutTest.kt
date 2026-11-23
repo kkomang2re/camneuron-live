@@ -143,4 +143,13 @@ class WidgetLayoutTest {
         assertTrue(WidgetLayout.isDonation(WidgetLayout.kind(WidgetHost.FIRST_SOURCE + 1, chzzkVideo)))
         assertFalse(WidgetLayout.isDonation(WidgetLayout.kind(WidgetHost.FIRST_SOURCE + 2, goal)))
     }
+
+    @Test
+    fun chzzkVideoDonationIsTimedByTheServer() {
+        assertTrue(WidgetLayout.isServerTimed("https://chzzk.naver.com/video-donation/abc123"))
+        assertTrue(WidgetLayout.isServerTimed("https://CHZZK.naver.com/Video-Donation/abc123?x=1"))
+        assertFalse(WidgetLayout.isServerTimed("https://chzzk.naver.com/donation/abc123"))
+        assertFalse(WidgetLayout.isServerTimed("https://toon.at/widget/alertbox/abc"))
+        assertFalse(WidgetLayout.isServerTimed(""))
+    }
 }
