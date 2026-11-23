@@ -12,13 +12,15 @@ import java.nio.ByteBuffer
 class RtmpStreamer(
     private val publisher: RtmpPublisher,
     queueBytes: Int,
-    /** 대기열에서 이보다 오래 기다린 영상은 버린다 ([MediaQueue]). 방송이 폰 안에서 밀리는 상한. */
+    /** 대기열에서 이보다 오래 기다린 영상은 버린다 ([MediaQueue]). */
     maxDelayMs: Long,
+    /** 대기열에서 이보다 오래 기다린 소리는 버리고 건너뛴다 ([MediaQueue]). 폰 안에서 방송이 밀리는 상한. */
+    maxAudioDelayMs: Long = Long.MAX_VALUE,
     onNeedKeyFrame: () -> Unit,
     private val onFailed: (String) -> Unit,
     private val log: (String) -> Unit = {},
 ) {
-    private val queue = MediaQueue(queueBytes, maxDelayMs, onNeedKeyFrame = onNeedKeyFrame)
+    private val queue = MediaQueue(queueBytes, maxDelayMs, maxAudioDelayMs = maxAudioDelayMs, onNeedKeyFrame = onNeedKeyFrame)
     private val thread = Thread(::sendLoop, "rtmp-sender")
 
     @Volatile
@@ -151,7 +153,7 @@ class RtmpStreamer(
             while (running) {
                 val item = queue.take(500) ?: continue
                 writeStartedMs = System.currentTimeMillis()
-                publisher.send(item.chunkStreamId, item.type, item.timestampMs, item.payload)
+                publisher.send(item.chunkStreamId, item.type, item.sendTimestampMs, item.payload)
                 writeStartedMs = 0L
             }
         } catch (e: IOException) {

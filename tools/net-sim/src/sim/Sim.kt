@@ -29,7 +29,7 @@ import java.util.concurrent.locks.LockSupport
  * 그대로 따르므로, 그쪽을 바꾸면 여기도 맞춘다.
  *
  * 결과(1초마다 한 줄): 망 속도, 목표 비트레이트, 네트워크 단계, 버린 프레임, 대기열에서 밀린 시간,
- * 서버에 닿은 영상·소리가 가장 늦었던 시간, 건너뛴 영상 길이.
+ * 서버에 닿은 영상·소리가 가장 늦었던 시간, 건너뛴 영상 길이, 시청자 지연(모형, [Viewer]).
  */
 
 // 앱의 기본 방송: 1080p30 4.5 Mbps, 키프레임 2초, AAC 160 kbps
@@ -55,6 +55,16 @@ val SCENARIOS: Map<String, List<Pair<Int, Int>>> = mapOf(
     }.flatten() + listOf(25 to 20_000),
     // 걸으며 방송: 45초 좋고 6초 느리다.
     "walk" to List(5) { listOf(45 to 20_000, 6 to 1_500) }.flatten() + listOf(30 to 20_000),
+    // 아주 느린 망 (엘리베이터, 사람 많은 곳, 폰이 뜨거워 통신이 느려질 때): 소리(160 kbps)조차 다 못 보낸다.
+    "trickle" to listOf(15 to 20_000, 60 to 100, 30 to 20_000),
+    // 소리는 보낼 수 있지만 영상은 못 보내는 망.
+    "crawl" to listOf(15 to 20_000, 60 to 300, 30 to 20_000),
+    // 소리를 겨우 보낼 만한 망이 3분 동안 이어진다.
+    "barely" to listOf(15 to 20_000, 180 to 200, 30 to 20_000),
+    // 8초씩 완전히 끊겼다 돌아오기를 되풀이한다 (다시 연결하는 기준인 10초보다 짧다).
+    "outages" to listOf(15 to 20_000) + List(6) { listOf(8 to 0, 7 to 20_000) }.flatten() + listOf(20 to 20_000),
+    // 한참 동안 느린 망 (600 kbps).
+    "slow" to listOf(15 to 20_000, 120 to 600, 20 to 20_000),
     "soak" to List(5) {
         listOf(30 to 20_000, 10 to 1_800, 15 to 20_000, 4 to 0, 20 to 20_000, 12 to 1_000)
     }.flatten() + listOf(25 to 20_000),
@@ -76,8 +86,64 @@ class Link(private val schedule: List<Pair<Int, Int>>) {
     }
 }
 
+/**
+ * 시청자 플레이어 모형: 따라잡지 않는 플레이어 (치지직 모바일 앱에서 지연이 늘어난 채 돌아오지 않는 것을 흉내 낸다).
+ *
+ * 서버에 닿은 것을 방송 시각(RTMP 타임스탬프) 순서대로 1배속으로 튼다. 처음에는 [START_BUFFER_MS]만큼 모은 뒤 틀기 시작하고,
+ * 받아 둔 것이 떨어지면 멈췄다가 새로 오면 그 자리에서 이어 튼다 (건너뛰거나 빨리 감지 않는다). 서버·CDN을 거치는 시간은
+ * [PIPELINE_MS]로 고정했다. 지연 = 지금 − 지금 보이는 장면을 찍은 시각. 망이 좋을 때는 5초다.
+ *
+ * 폰이 늦게 보낸 만큼 방송 시각이 한꺼번에 몰려 닿으면 플레이어에 그만큼 쌓여 지연이 늘어난다. 폰이 밀린 것을 버리고
+ * 방송 시각을 이어 붙이면 몰려 닿는 것이 없어 늘어나지 않는다. 실제 플레이어·서버가 이대로 움직이는지는 확인하지 못했다.
+ */
+class Viewer {
+    private val pending = ArrayDeque<LongArray>() // 받았지만 아직 틀지 않은 것: (방송 시각 ms, 찍은 시각 ns)
+    private var edgeMs = -1L
+    private var playheadMs = 0.0
+    private var lastNs = 0L
+    private var startNs = 0L
+    private var shownCaptureNs = 0L
+
+    @Synchronized
+    fun arrive(mediaMs: Long, captureNs: Long, nowNs: Long) {
+        advance(nowNs)
+        if (edgeMs < 0) {
+            startNs = nowNs + START_BUFFER_MS * 1_000_000
+            playheadMs = mediaMs.toDouble()
+            shownCaptureNs = captureNs
+        }
+        edgeMs = maxOf(edgeMs, mediaMs)
+        pending.addLast(longArrayOf(mediaMs, captureNs))
+    }
+
+    /** 지금의 시청자 지연 (ms). 아직 아무것도 못 받았으면 -1. */
+    @Synchronized
+    fun delayMs(nowNs: Long): Long {
+        if (edgeMs < 0) return -1
+        advance(nowNs)
+        if (nowNs < startNs) return START_BUFFER_MS + PIPELINE_MS
+        return (nowNs - shownCaptureNs) / 1_000_000 + PIPELINE_MS
+    }
+
+    private fun advance(nowNs: Long) {
+        if (edgeMs >= 0 && nowNs > startNs) {
+            val from = maxOf(lastNs, startNs)
+            playheadMs = minOf(playheadMs + (nowNs - from) / 1e6, edgeMs.toDouble())
+            while (pending.isNotEmpty() && pending.first()[0] <= playheadMs) shownCaptureNs = maxOf(shownCaptureNs, pending.removeFirst()[1])
+        }
+        lastNs = nowNs
+    }
+
+    companion object {
+        const val START_BUFFER_MS = 3_000L
+        const val PIPELINE_MS = 2_000L
+    }
+}
+
 /** 서버에 닿은 것 (1초 단위). */
 class Arrivals {
+    val viewer = Viewer()
+
     var videoFrames = 0
     var videoLagMaxMs = 0L
     var videoLagSumMs = 0L
@@ -87,7 +153,8 @@ class Arrivals {
     var maxSkippedMs = 0L // 끝내 오지 않은 영상의 가장 긴 구간
 
     @Synchronized
-    fun video(captureNs: Long, nowNs: Long) {
+    fun video(captureNs: Long, nowNs: Long, mediaMs: Long) {
+        viewer.arrive(mediaMs, captureNs, nowNs)
         val lag = (nowNs - captureNs) / 1_000_000
         videoFrames++
         videoLagMaxMs = maxOf(videoLagMaxMs, lag)
@@ -97,7 +164,8 @@ class Arrivals {
     }
 
     @Synchronized
-    fun audio(captureNs: Long, nowNs: Long) {
+    fun audio(captureNs: Long, nowNs: Long, mediaMs: Long) {
+        viewer.arrive(mediaMs, captureNs, nowNs)
         audioFrames++
         audioLagMaxMs = maxOf(audioLagMaxMs, (nowNs - captureNs) / 1_000_000)
     }
@@ -149,8 +217,8 @@ fun serve(socket: Socket, arrivals: Arrivals) {
         val now = System.nanoTime()
         val p = message.payload
         when (message.type) {
-            RtmpMessage.VIDEO -> if (p.size >= 26 && p[1].toInt() == 1) arrivals.video(unhex(p, 10), now)
-            RtmpMessage.AUDIO -> if (p.size >= 18 && p[1].toInt() == 1) arrivals.audio(unhex(p, 2), now)
+            RtmpMessage.VIDEO -> if (p.size >= 26 && p[1].toInt() == 1) arrivals.video(unhex(p, 10), now, message.timestamp)
+            RtmpMessage.AUDIO -> if (p.size >= 18 && p[1].toInt() == 1) arrivals.audio(unhex(p, 2), now, message.timestamp)
             RtmpMessage.COMMAND_AMF0 -> {
                 val values = Amf0.decodeAll(p)
                 val txn = values[1]
@@ -211,7 +279,10 @@ fun pump(client: Socket, server: Socket, link: Link) {
 
 fun main(args: Array<String>) {
     val name = args[0]
-    val schedule = SCENARIOS[name] ?: error("unknown scenario $name")
+    // 이름 대신 "초x속도,초x속도,..."(kbit/s)로 직접 줄 수도 있다: 15x20000,150x150,30x20000
+    val schedule = SCENARIOS[name] ?: runCatching {
+        name.split(',').map { part -> part.split('x').let { it[0].trim().toInt() to it[1].trim().toInt() } }
+    }.getOrNull() ?: error("unknown scenario $name")
     val out = File(args[1])
     val link = Link(schedule)
     val arrivals = Arrivals()
@@ -242,6 +313,7 @@ fun main(args: Array<String>) {
         publisher,
         queueBytes = BITRATE / 8 * LiveNet.QUEUE_SECONDS,
         maxDelayMs = LiveNet.QUEUE_SECONDS * 1000L,
+        maxAudioDelayMs = LiveNet.AUDIO_QUEUE_SECONDS * 1000L,
         onNeedKeyFrame = { keyRequested.set(true) },
         onFailed = { failure[0] = it },
     )
@@ -290,8 +362,12 @@ fun main(args: Array<String>) {
 
     // LiveSession의 1초 틱: 네트워크 대응 → 인코더 비트레이트와 소켓 버퍼, 멈춤 확인.
     val net = LiveNet.governor()
-    val rows = StringBuilder("t,link_kbps,target_kbps,net_level,dropped_total,queue_delay_ms,video_frames,video_lag_max_ms,video_lag_avg_ms,audio_frames,audio_lag_max_ms,skipped_ms\n")
+    val sendBuffer = LiveNet.SendBuffer()
+    var sendBufferBytes = 0
+    var lastBytesSent = streamer.bytesSent
+    val rows = StringBuilder("t,link_kbps,target_kbps,net_level,dropped_total,queue_delay_ms,video_frames,video_lag_max_ms,video_lag_avg_ms,audio_frames,audio_lag_max_ms,skipped_ms,viewer_delay_ms\n")
     var stalledAt = -1
+    var audioSkippedMs = 0L
     var next = link.startNs
     for (t in 1..link.totalSeconds) {
         next += 1_000_000_000L
@@ -300,11 +376,18 @@ fun main(args: Array<String>) {
         val stats = streamer.takeStats()
         if (net.update(stats.drops, stats.fill, System.nanoTime() / 1_000_000)) {
             targetBitrate.set(NetGovernor.limitBitrate(BITRATE, net.level))
-            streamer.setSendBuffer(RtmpPublisher.sendBufferFor(targetBitrate.get()))
         }
+        val sent = streamer.bytesSent
+        val bytes = sendBuffer.update(targetBitrate.get(), (sent - lastBytesSent).toInt(), stats.delayMs)
+        lastBytesSent = sent
+        if (bytes != sendBufferBytes) {
+            sendBufferBytes = bytes
+            streamer.setSendBuffer(bytes)
+        }
+        audioSkippedMs += stats.skippedMs
         val a = arrivals.take()
         rows.append("$t,${link.kbpsAt(System.nanoTime() - 500_000_000)},${targetBitrate.get() / 1000},${net.level},${streamer.droppedFrames},")
-            .append("${stats.delayMs},${a[0]},${a[1]},${a[2]},${a[3]},${a[4]},${a[5]}\n")
+            .append("${stats.delayMs},${a[0]},${a[1]},${a[2]},${a[3]},${a[4]},${a[5]},${arrivals.viewer.delayMs(System.nanoTime())}\n")
         if (streamer.isStalled(System.currentTimeMillis(), STALL_MS) || failure[0] != null) {
             stalledAt = t // 앱이라면 여기서 다시 연결한다
             break
@@ -312,6 +395,6 @@ fun main(args: Array<String>) {
     }
     running.set(false)
     out.writeText(rows.toString())
-    println("$name: 만든 프레임 ${produced.get()}, 버린 프레임 ${streamer.droppedFrames}, 멈춘 시각 $stalledAt, 실패 ${failure[0]}")
+    println("$name: 만든 프레임 ${produced.get()}, 버린 프레임 ${streamer.droppedFrames}, 건너뛴 시간 ${audioSkippedMs}ms, 멈춘 시각 $stalledAt, 실패 ${failure[0]}")
     Runtime.getRuntime().halt(0)
 }

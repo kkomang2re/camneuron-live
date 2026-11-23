@@ -128,6 +128,13 @@ class LiveSession(
     private var lastBytesSent = 0L
     private var lastTickMs = 0L
 
+    /** 지금 연결의 소켓 송신 버퍼 크기를 정하는 것과, 마지막으로 정한 크기 (연결할 때 정한 그대로면 0). */
+    @Volatile
+    private var sendBuffer = LiveNet.SendBuffer()
+
+    @Volatile
+    private var sendBufferBytes = 0
+
     fun start() {
         LiveState.update { LiveState.Status(phase = LiveState.Phase.CONNECTING, startedAtMs = SystemClock.elapsedRealtime()) }
         thread.start()
@@ -173,12 +180,15 @@ class LiveSession(
                         publisher,
                         queueBytes = quality.bitrate / 8 * LiveNet.QUEUE_SECONDS,
                         maxDelayMs = LiveNet.QUEUE_SECONDS * 1000L,
+                        maxAudioDelayMs = LiveNet.AUDIO_QUEUE_SECONDS * 1000L,
                         onNeedKeyFrame = { encoder?.requestKeyFrame() },
                         onFailed = { lose(it) },
                         log = { Log.i(TAG, it) },
                     )
                     streamer = active
                     lastBytesSent = 0L
+                    sendBuffer = LiveNet.SendBuffer()
+                    sendBufferBytes = 0
                     active.start()
                     everLive = true
                     LiveState.update { it.copy(phase = LiveState.Phase.LIVE, message = null) }
@@ -510,14 +520,19 @@ class LiveSession(
 
         val active = streamer
         var kbps = 0
+        var sentBytesPerS = -1 // 아직 재지 못했으면 -1
         var sendDelayMs = 0L
         if (active != null) {
             val stats = active.takeStats()
             sendDelayMs = stats.delayMs
             changed = net.update(stats.drops, stats.fill, now) || changed
+            if (stats.skippedMs > 0) Log.i(TAG, "upload too slow even for sound: skipped ${stats.skippedMs} ms")
             val sent = active.bytesSent
             val elapsed = if (lastTickMs > 0) now - lastTickMs else TICK_MS
-            if (lastBytesSent > 0) kbps = ((sent - lastBytesSent) * 8 / elapsed.coerceAtLeast(1)).toInt()
+            if (lastBytesSent > 0) {
+                kbps = ((sent - lastBytesSent) * 8 / elapsed.coerceAtLeast(1)).toInt()
+                sentBytesPerS = ((sent - lastBytesSent) * 1000 / elapsed.coerceAtLeast(1)).toInt()
+            }
             lastBytesSent = sent
             if (active.isStalled(System.currentTimeMillis(), STALL_MS)) {
                 lose("네트워크가 멈춤")
@@ -530,7 +545,14 @@ class LiveSession(
             targetBitrate = NetGovernor.limitBitrate(LiveHeat.bitrate(quality.bitrate, heat.level), net.level)
             Log.i(TAG, "bitrate ${targetBitrate / 1000} kbps (heat ${heat.level}, net ${net.level})")
             encoder?.setBitrate(targetBitrate)
-            active?.setSendBuffer(RtmpPublisher.sendBufferFor(targetBitrate))
+        }
+        if (active != null) {
+            // 소켓 버퍼는 지금 비트레이트에 맞추고, 밀려 있는 동안에는 실제로 나가는 속도까지 줄인다.
+            val bytes = sendBuffer.update(targetBitrate, sentBytesPerS, sendDelayMs)
+            if (bytes != sendBufferBytes) {
+                sendBufferBytes = bytes
+                active.setSendBuffer(bytes)
+            }
         }
         if (cameraErrorUntilMs != 0L && now >= cameraErrorUntilMs) {
             cameraErrorUntilMs = 0L
