@@ -54,7 +54,7 @@ window.addEventListener('message', function (e) { parent.postMessage('got:' + e.
   const check = (name, ok, detail) => { results.push(ok); console.log((ok ? 'PASS ' : 'FAIL ') + name + (detail ? '  ' + detail : '')); };
 
   // 1. 재생 중인 'a': 넘기면 'b'로 딱 한 번 넘어가고, 기다리는 소리는 그대로다
-  let n = await page.evaluate(script);
+  let n = await page.evaluate(script + '\nwindow.__camneuronSkipMedia()');
   await page.waitForFunction(() => window.current && window.current.id === 'b' && !window.current.paused, null, { timeout: 5000 });
   let st = await page.evaluate(() => ({ played: window.played, ended: window.endedEvents, idleEnded: !!window.idleEnded, left: window.queue }));
   check('playing clip is skipped once and the next one starts', st.played.join() === 'a' && st.ended === 1 && st.left.join() === 'c', JSON.stringify(st) + ' returned ' + n);
@@ -70,7 +70,7 @@ window.addEventListener('message', function (e) { parent.postMessage('got:' + e.
   // 3. 재생하다 멈춰 선 'b': 끝났다고 알려 'c'가 시작된다
   await page.waitForFunction(() => window.current.currentTime > 0.2);
   await page.evaluate(() => window.current.pause());
-  n = await page.evaluate(script);
+  n = await page.evaluate(script + '\nwindow.__camneuronSkipMedia()');
   await page.waitForFunction(() => window.current && window.current.id === 'c' && !window.current.paused, null, { timeout: 5000 });
   st = await page.evaluate(() => ({ played: window.played, ended: window.endedEvents }));
   check('clip stuck midway is skipped once', st.played.join() === 'a,b' && st.ended === 2, JSON.stringify(st));
@@ -84,12 +84,12 @@ window.addEventListener('message', function (e) { parent.postMessage('got:' + e.
   });
   await page.waitForTimeout(300);
   const before = await page.evaluate(() => ({ paused: window.current.paused, duration: String(window.current.duration) }));
-  n = await page.evaluate(script);
+  n = await page.evaluate(script + '\nwindow.__camneuronSkipMedia()');
   st = await page.evaluate(() => ({ played: window.played, ended: window.endedEvents }));
   check('clip that failed to load is skipped', st.played.join() === 'a,b,stalled' && st.ended === 3, JSON.stringify(before) + ' ' + JSON.stringify(st) + ' returned ' + n);
 
   // 5. 재생 중인 것이 없을 때: 아무것도 망가뜨리지 않는다
-  n = await page.evaluate(script);
+  n = await page.evaluate(script + '\nwindow.__camneuronSkipMedia()');
   const st2 = await page.evaluate(() => ({ ended: window.endedEvents }));
   check('with nothing playing nothing else is touched', st2.ended === st.ended, 'returned ' + n);
 

@@ -220,9 +220,9 @@
     <string name="btn_widget_done">조정 끝</string>
     <string name="btn_widget_skip">후원 넘기기</string>
     <string name="btn_widget_reload">새로고침</string>
-    <string name="toast_widget_skipped">재생 중인 후원을 넘겼습니다. 그대로 멈춰 있으면 \"새로고침\"을 누르세요</string>
-    <string name="toast_widget_skip_nothing">넘길 영상·소리를 찾지 못했습니다. 멈춰 있으면 \"새로고침\"을 누르세요</string>
-    <string name="toast_widget_skip_none">후원 알림·영상 후원 위젯이 없습니다</string>
+    <string name="toast_widget_skipped">지금 나오는 후원을 넘기는 중입니다 (몇 초). 그대로면 한 번 더 누르거나 \"새로고침\"</string>
+    <string name="toast_widget_skip_nothing">지금 나오는 후원이 없습니다. 멈춰 보이면 \"새로고침\"을 누르세요</string>
+    <string name="toast_widget_skip_none">켜 둔 후원 위젯이 없습니다</string>
     <string name="toast_widget_reloaded">위젯 %1$d개를 새로고침했습니다</string>
     <string name="toast_widget_reload_none">켜 둔 위젯이 없습니다</string>
     <string name="widget_note">주소를 넣고 저장하면 캠 방송에 알맞은 자리에 저절로 놓입니다 (채팅창 왼쪽, 후원 알림·영상 후원 위 가운데). 후원 알림과 영상 후원의 그림·영상은 방송 화면에 그대로 들어갑니다. 소리는 폰 스피커로 나오고, 마이크에 들어간 만큼만 방송에 섞입니다 (폰의 미디어 음량을 켜 두세요. 이어폰을 끼면 시청자에게는 안 들립니다). \"방송 화면에 넣기\"를 끄면 폰 화면에만 보입니다. 주소는 이 폰에만 저장됩니다.</string>

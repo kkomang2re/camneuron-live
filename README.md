@@ -25,8 +25,8 @@ PC 없이 폰 하나로 치지직에 야외 방송을 하는 Android 앱. 폰 �
 - 위젯: 치지직 채팅창·후원 알림, 투네이션·치지직 **후원 알림과 영상 후원** 등 OBS 브라우저 소스용 주소를 방송 화면에 얹는다.
   주소를 넣으면 알맞은 자리에 저절로 놓이고, 방송 중에도 옮기고 크기를 바꿀 수 있다.
   위젯의 소리는 폰 스피커로 나와 마이크로 들어간다 (이어폰을 끼면 시청자에게 안 들린다).
-  후원이 멈췄을 때는 "위젯" → **후원 넘기기**(재생 중인 영상·소리만 끝으로 넘긴다. 밀린 다음 후원은 남는다)나
-  **새로고침**(위젯 페이지를 다시 부른다). 페이지를 불러오지 못했거나 웹 페이지를 그리는 프로세스가 죽으면 스스로 다시 부른다.
+  후원이 멈췄을 때는 "위젯" → **후원 넘기기**(위젯 페이지의 시계를 빨리 감아 지금 나오는 후원만 넘긴다. 밀린 다음 후원은
+  남는다)나 **새로고침**(위젯 페이지를 다시 부른다). 페이지를 불러오지 못했거나 웹 페이지를 그리는 프로세스가 죽으면 스스로 다시 부른다.
 
 시청자 수는 치지직 Open API에 없어 웹 플레이어가 쓰는 공개 주소(`api.chzzk.naver.com/polling/v2/channels/{채널}/live-status`)를
 읽는다. 문서에 없는 주소라 언제든 안 될 수 있고, 그때는 그 줄만 "확인 중"으로 남는다. 혼자 쓰는 앱이라 쓴다.
@@ -101,8 +101,14 @@ python3 tools/net-sim/summary.py out/*.csv
 
 ## 테스트 도구
 
-`tools/widget-skip-test/`: 후원 넘기기 스크립트(`app/src/main/assets/widget_skip.js`)를 실제 Chromium에서 시험한다
-(`node tools/widget-skip-test/test.js app/src/main/assets/widget_skip.js`, playwright 필요).
+`tools/widget-skip-test/`: 후원 넘기기 스크립트를 실제 Chromium에서 시험한다 (playwright 필요). 후원 위젯이 다음 후원으로
+넘어가는 여러 방식(산 시간만큼 되풀이, 1초마다 세기, 시계 보기, 글자 알림, 다른 사이트의 플레이어, 재생이 끝나야 넘어감)을
+흉내 낸 페이지로, 지금 것만 넘기고 다음 것의 시간은 거의 깎지 않는지, 넘기지 않을 때 타이머·시계가 원래대로 도는지 본다.
+
+```
+node tools/widget-skip-test/time-test.js app/src/main/assets/widget_time.js app/src/main/assets/widget_skip.js
+node tools/widget-skip-test/test.js app/src/main/assets/widget_skip.js
+```
 
 `tools/rtmp-test/`: PC에서 폰 송출을 받아 보는 도구 (`adb reverse tcp:1935 tcp:1935`로 폰과 연결).
 

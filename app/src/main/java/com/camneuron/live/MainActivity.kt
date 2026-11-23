@@ -1053,10 +1053,10 @@ class MainActivity : Activity() {
         findViewById<View>(R.id.btn_widget_done).setOnClickListener { setEditingWidgets(false) }
         widgetAutoButton.setOnClickListener { autoLayoutWidgets() }
         findViewById<View>(R.id.btn_widget_skip).setOnClickListener {
-            WidgetHost.skipDonation { widgets, skipped ->
+            WidgetHost.skipDonation { widgets, started ->
                 val message = when {
                     widgets == 0 -> R.string.toast_widget_skip_none
-                    skipped == 0 -> R.string.toast_widget_skip_nothing
+                    started == 0 -> R.string.toast_widget_skip_nothing
                     else -> R.string.toast_widget_skipped
                 }
                 Toast.makeText(this, message, Toast.LENGTH_LONG).show()

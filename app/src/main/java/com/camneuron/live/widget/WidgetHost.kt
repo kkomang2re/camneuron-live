@@ -49,7 +49,7 @@ import java.util.concurrent.CopyOnWriteArraySet
  *
  * 창을 복사하므로 두 위젯의 자리가 겹치면 겹친 곳에는 서로의 그림이 함께 담긴다 (반투명한 곳이 조금 진해질 뿐이다).
  *
- * 위젯 페이지가 말썽일 때: [skipDonation]은 후원 위젯에서 재생 중인 영상·소리를 끝으로 넘기고 (밀린 다음 후원은 남는다),
+ * 위젯 페이지가 말썽일 때: [skipDonation]은 후원 위젯의 시계를 빨리 감아 지금 나오는 후원을 넘기고 (밀린 다음 후원은 남는다),
  * [reloadAll]은 페이지를 다시 부른다. 페이지를 불러오지 못했으면 조금 뒤에 스스로 다시 부르고, 웹 페이지를 그리는
  * 프로세스가 죽으면 (메모리 부족 등) 웹 뷰를 새로 만든다. 그 일을 처리하지 않으면 앱까지 함께 죽는다.
  *
@@ -83,8 +83,19 @@ object WidgetHost {
     /** 페이지를 불러오지 못했을 때 다시 부르기까지 기다리는 시간. */
     private const val RETRY_LOAD_MS = 5_000L
 
-    /** 후원 위젯에서 재생 중인 영상·소리를 넘기는 스크립트 (assets/widget_skip.js). 처음 쓸 때 읽는다. */
-    private var skipScript: String? = null
+    /** 위젯 페이지에 넣는 스크립트 (assets의 widget_time.js와 widget_skip.js). 처음 쓸 때 읽는다. */
+    private var pageScript: String? = null
+
+    /**
+     * 후원을 넘길 수 있게 페이지에 넣는 스크립트. 페이지의 타이머와 시계를 감싸 두었다가 넘기라고 하면 페이지의 시간만 빨리
+     * 감는다. 여러 번 넣어도 한 번만 걸린다. 읽지 못하면 null.
+     */
+    private fun pageScript(): String? = pageScript ?: runCatching {
+        val assets = context?.assets ?: return@runCatching null
+        listOf("widget_time.js", "widget_skip.js").joinToString("\n") { name ->
+            assets.open(name).bufferedReader().use { it.readText() }
+        }
+    }.onFailure { Log.w(TAG, "widget page script unavailable", it) }.getOrNull()?.also { pageScript = it }
 
     /** 영상이 뜨기 전에 보일 그림: 투명한 점 하나. */
     private val EMPTY_POSTER: Bitmap = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
@@ -151,26 +162,29 @@ object WidgetHost {
     }
 
     /**
-     * 후원 알림·영상 후원 위젯에서 지금 재생 중인 영상·소리를 끝으로 넘긴다. 페이지는 그대로라서 밀려 있던 다음 후원이
-     * 이어서 나온다. 끝나면 [onResult]에 후원 위젯 수와 넘긴 영상·소리의 수를 알린다 (메인 스레드).
-     * 페이지 안의 다른 사이트 영상(유튜브 말고)은 건드릴 수 없다. 그때는 [reloadAll]을 쓴다.
+     * 후원 위젯에서 지금 나오는 후원을 넘긴다. 후원 위젯은 후원마다 정해진 시간이 지나야 다음으로 넘어가므로 (영상 후원은
+     * 영상이 끝나도 산 시간이 남았으면 되풀이한다), 페이지의 시계를 빨리 감아 페이지가 스스로 넘어가게 한다 (몇 초 걸린다).
+     * 페이지는 그대로라서 밀려 있던 다음 후원이 이어서 나온다. [onResult]에 대상 위젯 수와 넘기기 시작한 위젯 수를 알린다
+     * (메인 스레드). 나오는 후원이 없는 위젯은 시작하지 않는다.
+     *
+     * 대상은 후원 알림·영상 후원 위젯이고, 이름으로 알아볼 수 없으면 채팅창이 아닌 모든 위젯이다.
      */
-    fun skipDonation(onResult: (widgets: Int, skipped: Int) -> Unit) {
+    fun skipDonation(onResult: (widgets: Int, started: Int) -> Unit) {
         checkMain()
-        val targets = slots.filterNotNull().filter { it.isDonation() }
-        val script = skipScript ?: runCatching {
-            context?.assets?.open("widget_skip.js")?.bufferedReader()?.use { it.readText() }
-        }.getOrNull()?.also { skipScript = it }
+        val active = slots.filterNotNull()
+        val targets = active.filter { it.isDonation() }.ifEmpty { active.filter { !it.isChat() } }
+        val script = pageScript()
         if (targets.isEmpty() || script == null) {
             onResult(targets.size, 0)
             return
         }
         var waiting = targets.size
-        var skipped = 0
+        var started = 0
         for (slot in targets) {
-            slot.evaluate(script) { result ->
-                skipped += result?.trim()?.toIntOrNull() ?: 0
-                if (--waiting == 0) onResult(targets.size, skipped)
+            // 스크립트를 함께 넣는다: 페이지를 불러올 때 넣지 못했어도 (이때부터 거는 타이머는) 넘길 수 있다.
+            slot.evaluate("$script\nwindow.__camneuronTime.skip()") { result ->
+                if (result?.contains("started") == true || result?.contains("busy") == true) started++
+                if (--waiting == 0) onResult(targets.size, started)
             }
         }
     }
@@ -316,7 +330,10 @@ object WidgetHost {
             // 후원 알림은 소리·영상을 스스로 재생한다 (OBS 브라우저 소스처럼).
             settings.mediaPlaybackRequiresUserGesture = false
             webViewClient = object : WebViewClient() {
-                override fun onPageFinished(view: WebView, url: String?) = applyZoom()
+                override fun onPageFinished(view: WebView, url: String?) {
+                    applyZoom()
+                    injectPageScript()
+                }
 
                 override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
                     // 페이지 자체를 불러오지 못했을 때만 (네트워크가 잠깐 끊긴 경우). 그대로 두면 빈 위젯으로 남는다.
@@ -337,6 +354,12 @@ object WidgetHost {
             webChromeClient = object : WebChromeClient() {
                 // 영상이 뜨기 전에 보이는 회색 재생 그림 대신 아무것도 안 보이게 한다 (방송 화면에 회색 칸이 뜨지 않게).
                 override fun getDefaultVideoPoster(): Bitmap = EMPTY_POSTER
+
+                // 페이지를 불러오는 동안에도 넣어 둔다. 일찍 넣을수록 페이지가 거는 타이머를 더 많이 감쌀 수 있다
+                // (다 불러온 뒤에 넣어도 그 뒤에 오는 후원은 넘길 수 있다).
+                override fun onProgressChanged(view: WebView, newProgress: Int) {
+                    if (newProgress in 10..99) injectPageScript()
+                }
             }
             // 영상(video)이 복사한 그림에 담기게 한다. 그냥 두면 WebView가 영상을 창 뒤의 별도 층에 올리고 창에는 구멍만
             // 뚫어서, 창을 복사하면 영상 자리가 투명하게 나온다 (Galaxy S25 Ultra에서 확인). 웹 페이지를 자기 층에 그리게
@@ -362,6 +385,18 @@ object WidgetHost {
         fun isDonation(): Boolean {
             val current = item ?: return false
             return WidgetLayout.isDonation(WidgetLayout.kind(index, current))
+        }
+
+        fun isChat(): Boolean {
+            val current = item ?: return false
+            return WidgetLayout.kind(index, current) == WidgetLayout.Kind.CHAT
+        }
+
+        /** 후원을 넘길 수 있게 하는 스크립트를 페이지에 넣는다 ([pageScript]). 채팅창에는 넣지 않는다. */
+        private fun injectPageScript() {
+            if (destroyed || isChat()) return
+            val script = pageScript() ?: return
+            webView.evaluateJavascript(script, null)
         }
 
         /** 페이지를 처음부터 다시 부른다. 주소가 없으면 false. */
