@@ -168,6 +168,50 @@ pages.serverqueue = `<body><iframe id="p" src="PLAYER"></iframe><script>${common
   window.begin = function () { serverEvery(function () { if (window.current) load(window.current); }, 2000); next(); };
 </script></body>`;
 
+// --- 목소리(읽어 주는 소리)가 있는 후원 알림. 소리를 페이지에 붙이지 않고 튼다 (new Audio(주소).play()): 페이지를 뒤져서는
+// 찾을 수 없다. 효과음이 끝나면 목소리가 시작되고, 보여 주는 시간(6초)과 목소리가 둘 다 끝나야 다음 후원으로 넘어간다.
+// how가 'webaudio'면 목소리를 Web Audio로 튼다. 'after'면 화면은 5초 뒤에 바로 다음 후원으로 바뀌고 목소리는 혼자 이어진다.
+const voiceQueue = (how) => `<body><div id="root"></div><script>${wav}${common}
+  window.queue = ['a', 'b', 'c', 'd']; window.DURATION = 6000; window.sounds = {};
+  var ctx = ${how === 'webaudio'} ? new AudioContext() : null;
+  function voice(state, done) {
+    if (ctx) {
+      var node = ctx.createBufferSource(); node.buffer = ctx.createBuffer(1, ctx.sampleRate * 12, ctx.sampleRate);
+      node.connect(ctx.destination); state.voice = { node: node, ended: false };
+      node.onended = function () { state.voice.ended = true; done(); };
+      node.start();
+    } else {
+      var tts = new Audio(wav(12)); state.voice = tts; tts.addEventListener('ended', done); tts.play();
+    }
+  }
+  function next() {
+    var id = window.queue.shift(); var root = document.getElementById('root');
+    if (!id) { root.innerHTML = ''; window.current = null; return; }
+    root.innerHTML = '<div class="alert"><b>시청자</b>님이 1,000원 후원 <p>테스트 후원입니다</p></div>'; started(id);
+    var state = window.sounds[id] = { sfx: new Audio(wav(1)), voice: null };
+    if (${how === 'after'}) {
+      voice(state, function () {});
+      setTimeout(next, 5000);
+      return;
+    }
+    var timeUp = false, voiceDone = false;
+    function maybeNext() { if (timeUp && voiceDone) { root.innerHTML = ''; setTimeout(next, 300); } }
+    state.sfx.addEventListener('ended', function () { voice(state, function () { voiceDone = true; maybeNext(); }); });
+    state.sfx.play();
+    setTimeout(function () { timeUp = true; maybeNext(); }, window.DURATION);
+  }
+  // 그 후원의 목소리가 지금 들리는가
+  window.audible = function (id) {
+    var v = window.sounds[id] && window.sounds[id].voice; if (!v) return false;
+    if (v.node) return !v.ended;
+    return !v.paused && !v.ended && !v.muted;
+  };
+  window.begin = next;
+</script></body>`;
+pages.voicequeue = voiceQueue('audio');
+pages.webaudioqueue = voiceQueue('webaudio');
+pages.voiceafter = voiceQueue('after');
+
 const playerFrame = `<script>
 window.addEventListener('message', function (e) {
   var d; try { d = JSON.parse(e.data); } catch (x) { return; }
@@ -332,6 +376,30 @@ window.addEventListener('message', function (e) {
     // 그대로 두면 지금 것이 계속 나온다
     await page.waitForTimeout(1500);
     check(`${kind}: nothing else is skipped afterwards`, await page.evaluate(() => window.current) === 'c' && await visible(page));
+    await page.close();
+  }
+
+  // --- 목소리가 있는 후원: 넘기면 그 후원의 목소리가 바로 꺼지고, 다음 후원의 목소리는 제대로 나온다
+  for (const kind of ['voicequeue', 'webaudioqueue', 'voiceafter']) {
+    const page = await browser.newPage();
+    await page.goto(base + kind);
+    await page.evaluate(script);
+    await page.evaluate(() => window.begin());
+    await page.waitForFunction(() => window.current === 'a');
+    await page.waitForTimeout(2500); // 'a'의 목소리가 나오는 중
+    check(`${kind}: the voice of 'a' is playing before the skip`, await page.evaluate(() => window.audible('a')));
+    const pressed = Date.now();
+    const answer = await page.evaluate(() => window.__camneuronTime.skip(true));
+    await page.waitForTimeout(250);
+    check(`${kind}: the voice stops as soon as skip is pressed`, !(await page.evaluate(() => window.audible('a'))));
+    await page.waitForFunction(() => window.current === 'b' && !window.__camneuronTime.skipping(), null, { timeout: 15000 }).catch(() => {});
+    const took = Date.now() - pressed;
+    const st = await page.evaluate(() => ({ current: window.current, queue: window.queue.join() }));
+    check(`${kind}: one press skips exactly one, quickly (${took} ms)`, answer === 'started' && st.current === 'b' && st.queue === 'c,d' && took <= 3000, JSON.stringify(st));
+    await page.waitForTimeout(2500); // 'b'의 목소리가 시작될 때까지
+    const after = await page.evaluate(() => ({ a: window.audible('a'), b: window.audible('b'), current: window.current }));
+    check(`${kind}: the skipped voice stays off and the next donation's voice plays`, !after.a && after.b && after.current === 'b', JSON.stringify(after));
+    check(`${kind}: the next donation is visible`, await visible(page));
     await page.close();
   }
 

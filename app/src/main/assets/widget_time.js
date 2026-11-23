@@ -142,6 +142,78 @@
   }
 
   // --------------------------------------------------------------------------------------------
+  // 페이지가 내는 소리를 알아 둔다. 넘긴 후원의 목소리·효과음을 끄려면 어디서 나는지 알아야 한다.
+  // 후원 위젯은 소리를 페이지에 붙이지 않고 트는 일이 흔하다: new Audio(주소).play() (페이지를 뒤져서는 찾을 수 없다),
+  // 또는 Web Audio (소리 파일을 받아 직접 트는 방식). 그래서 "재생"을 부르는 자리에 끼어들어 적어 둔다.
+
+  var epoch = 0; // 넘기는 동안 "아직 이 후원이다"를 확인할 때마다 는다. 그 뒤에 시작된 소리는 다음 후원의 것일 수 있다.
+  var known = []; // 재생한 적 있는 영상·소리
+  var sources = []; // 재생 중인 Web Audio 소리: { node, epoch }
+
+  function mediaSrc(m) { return m.currentSrc || m.src || ''; }
+
+  function noteMedia(m) {
+    if (known.indexOf(m) < 0) {
+      known.push(m);
+      if (known.length > 60) known = known.filter(function (k) { return k.isConnected || (!k.paused && !k.ended); });
+    }
+    if (!hidden) return;
+    // 가리는 중에 시작한 소리: 일단 끈다. 이 후원의 것인지 다음 후원의 것인지는 넘기기가 끝날 때 가른다.
+    for (var i = 0; i < hidden.media.length; i++) {
+      if (hidden.media[i].element === m) { hidden.media[i].replayed = epoch; return; }
+    }
+    if (!m.muted) {
+      m.muted = true;
+      hidden.media.push({ element: m, src: mediaSrc(m), time: m.currentTime, epoch: epoch, replayed: -1 });
+    }
+  }
+
+  var mediaProto = window.HTMLMediaElement && window.HTMLMediaElement.prototype;
+  if (mediaProto && mediaProto.play) {
+    var nativePlay = mediaProto.play;
+    mediaProto.play = function () {
+      try { noteMedia(this); } catch (e) {}
+      return nativePlay.apply(this, arguments);
+    };
+  }
+
+  var sourceProto = window.AudioBufferSourceNode && window.AudioBufferSourceNode.prototype;
+  if (sourceProto && sourceProto.start) {
+    var nativeStart = sourceProto.start;
+    sourceProto.start = function () {
+      var result = nativeStart.apply(this, arguments);
+      try {
+        var entry = { node: this, epoch: epoch };
+        sources.push(entry);
+        this.addEventListener('ended', function () {
+          var i = sources.indexOf(entry);
+          if (i >= 0) sources.splice(i, 1);
+        });
+      } catch (e) {}
+      return result;
+    };
+  }
+
+  // [before]보다 먼저 시작한 Web Audio 소리를 멈춘다 (멈추면 페이지에는 소리가 끝났다고 알려진다).
+  function stopSources(before) {
+    var list = sources.slice();
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].epoch < before) { try { list[i].node.stop(); } catch (e) {} }
+    }
+  }
+
+  // 페이지에 있는 것과 페이지에 붙이지 않고 튼 것을 합친 영상·소리.
+  function allMedia() {
+    var out = [];
+    try {
+      var inPage = document.querySelectorAll('video, audio');
+      for (var i = 0; i < inPage.length; i++) out.push(inPage[i]);
+    } catch (e) {}
+    for (var k = 0; k < known.length; k++) if (out.indexOf(known[k]) < 0) out.push(known[k]);
+    return out;
+  }
+
+  // --------------------------------------------------------------------------------------------
   // 지금 나오는 후원이 끝났는지 알아보는 것.
   //
   // 후원이 줄지어 밀려 있으면 하나가 끝나자마자 다음 것이 나온다. 넘기기는 딱 하나만 넘겨야 하므로, 시간을 감는 동안
@@ -206,6 +278,11 @@
   // 재생 중인 영상·소리나 보이는 안쪽 페이지(플레이어)가 있는지.
   function playing(doc) {
     var i;
+    if (doc === document) {
+      if (sources.length > 0) return true;
+      var every = allMedia();
+      for (i = 0; i < every.length; i++) if (!every[i].paused && !every[i].ended) return true;
+    }
     try {
       var media = doc.querySelectorAll('video, audio');
       for (i = 0; i < media.length; i++) if (!media[i].paused && !media[i].ended) return true;
@@ -252,12 +329,10 @@
       loads: player.loads, idChanges: player.idChanges, loadSeenAt: 0,
       media: [], // 그때 재생 중이던 영상·소리 (이 후원의 것)
     };
-    try {
-      var media = document.querySelectorAll('video, audio');
-      for (var i = 0; i < media.length; i++) {
-        if (!media[i].paused && !media[i].ended) base.media.push({ element: media[i], src: media[i].currentSrc || media[i].src || '' });
-      }
-    } catch (e) {}
+    var media = allMedia();
+    for (var i = 0; i < media.length; i++) {
+      if (!media[i].paused && !media[i].ended) base.media.push({ element: media[i], src: mediaSrc(media[i]) });
+    }
   }
 
   // 이 후원의 영상·소리(넘기기를 시작할 때 재생 중이던 것)가 모두 끝났거나 없어졌는가.
@@ -265,7 +340,7 @@
     if (base.media.length === 0) return false;
     for (var i = 0; i < base.media.length; i++) {
       var m = base.media[i].element;
-      if (m.isConnected && !m.paused && !m.ended && (m.currentSrc || m.src || '') === base.media[i].src) return false;
+      if (!m.paused && !m.ended && mediaSrc(m) === base.media[i].src) return false;
     }
     return true;
   }
@@ -317,11 +392,11 @@
 
   function muteIn(doc) {
     var i;
-    var media = doc.querySelectorAll('video, audio');
+    var media = doc === document ? allMedia() : doc.querySelectorAll('video, audio');
     for (i = 0; i < media.length; i++) {
       if (!media[i].muted) {
         media[i].muted = true;
-        hidden.media.push({ element: media[i], src: media[i].currentSrc || media[i].src || '', time: media[i].currentTime });
+        hidden.media.push({ element: media[i], src: mediaSrc(media[i]), time: media[i].currentTime, epoch: epoch, replayed: -1 });
       }
     }
     var frames = doc.querySelectorAll('iframe');
@@ -339,6 +414,10 @@
     hidden = { opacity: style.getPropertyValue('opacity'), priority: style.getPropertyPriority('opacity'), media: [], frames: [] };
     style.setProperty('opacity', '0', 'important');
     try { muteIn(document); } catch (e) {}
+    // Web Audio 소리는 따로 끌 수 없어 멈춘다. 브라우저가 읽어 주는 목소리도 멈춘다.
+    stopSources(Infinity);
+    try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (e) {}
+    epoch++; // 이 뒤에 시작되는 소리는 따로 가른다
   }
 
   // 소리를 껐던 것을 되돌린다. 넘긴 후원의 소리가 아직 나오고 있으면 (화면은 끝났는데 읽어 주는 소리가 남은 경우)
@@ -346,9 +425,11 @@
   function unmute(entry) {
     var m = entry.element;
     try {
-      var same = (m.currentSrc || m.src || '') === entry.src;
-      // 멈췄거나, 다른 것을 불러왔거나, 처음부터 다시 재생한 것(다음 후원이 같은 효과음을 쓴다)은 바로 켠다.
-      if (!m.isConnected || m.paused || m.ended || !same || m.currentTime < entry.time) { m.muted = false; return; }
+      // 후원이 바뀐 바로 그때 시작한 소리는 다음 후원의 것이다 (같은 효과음을 처음부터 다시 튼 것도).
+      if (entry.epoch === epoch || entry.replayed === epoch) { m.muted = false; return; }
+      var same = mediaSrc(m) === entry.src;
+      // 멈췄거나, 다른 것을 불러왔거나, 처음부터 다시 재생한 것은 바로 켠다.
+      if (m.paused || m.ended || !same || m.currentTime < entry.time) { m.muted = false; return; }
       var done = false;
       var restore = function () {
         if (done) return;
@@ -383,7 +464,7 @@
     for (var i = 0; i < base.media.length; i++) {
       var m = base.media[i].element;
       try {
-        if (!m.isConnected || m.ended || (m.currentSrc || m.src || '') !== base.media[i].src) continue;
+        if (m.ended || mediaSrc(m) !== base.media[i].src) continue;
         if (!m.paused && isFinite(m.duration) && m.duration > 0) {
           m.currentTime = m.duration;
         } else {
@@ -482,9 +563,13 @@
           if (candidate) { delete candidates[t.id]; left--; state.since = -(now() - from); }
           fire(t);
           fires++;
-          if (touched() && ended()) outcome = 'ended';
-          else if (candidate) outcome = 'settle';
-          else if (fires >= STEP_FIRES) outcome = 'more';
+          if (touched() && ended()) {
+            outcome = 'ended';
+          } else {
+            still();
+            if (candidate) outcome = 'settle';
+            else if (fires >= STEP_FIRES) outcome = 'more';
+          }
         }
       } finally {
         advancing = false;
@@ -496,9 +581,16 @@
       return outcome;
     }
 
+    // 아직 이 후원이다. 지금까지 시작된 소리는 이 후원의 것이다 (가리는 중이면 Web Audio 소리는 멈춘다).
+    function still() {
+      epoch++;
+      if (hidden) stopSources(epoch);
+    }
+
     function step() {
       var players = playerState();
       if (players === 'changed' || ended()) return finish('changed');
+      still();
       if (players === 'unsure') { nativeSetTimeout(step, STEP_REAL_MS); return; } // 다음 후원일 수 있다: 더 감지 않고 기다린다
       if (!state.waiting) {
         var outcome = wind();
