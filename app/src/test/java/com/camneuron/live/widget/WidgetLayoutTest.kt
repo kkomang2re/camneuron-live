@@ -128,4 +128,19 @@ class WidgetLayoutTest {
         assertEquals(before.chat, back.chat)
         assertEquals(before.sources[0].copy(name = "새 이름"), back.sources[0])
     }
+
+    @Test
+    fun donationWidgetsAreAlertsAndVideoDonations() {
+        assertTrue(WidgetLayout.isDonation(WidgetLayout.Kind.ALERT))
+        assertTrue(WidgetLayout.isDonation(WidgetLayout.Kind.VIDEO))
+        assertFalse(WidgetLayout.isDonation(WidgetLayout.Kind.CHAT))
+        assertFalse(WidgetLayout.isDonation(WidgetLayout.Kind.OTHER))
+        // 이름으로 알아본다: 설정의 "+ 투네이션 영상 후원", "+ 치지직 영상 후원" 버튼이 붙이는 이름
+        val toonationVideo = OverlayItem(x = 0f, y = 0f, w = 0.3f, h = 0.3f, url = "https://toon.at/widget/x", name = "투네이션 영상 후원")
+        val chzzkVideo = OverlayItem(x = 0f, y = 0f, w = 0.3f, h = 0.3f, url = "https://chzzk.naver.com/x", name = "치지직 영상 후원")
+        val goal = OverlayItem(x = 0f, y = 0f, w = 0.3f, h = 0.3f, url = "https://example.com/goal", name = "목표")
+        assertTrue(WidgetLayout.isDonation(WidgetLayout.kind(WidgetHost.FIRST_SOURCE, toonationVideo)))
+        assertTrue(WidgetLayout.isDonation(WidgetLayout.kind(WidgetHost.FIRST_SOURCE + 1, chzzkVideo)))
+        assertFalse(WidgetLayout.isDonation(WidgetLayout.kind(WidgetHost.FIRST_SOURCE + 2, goal)))
+    }
 }

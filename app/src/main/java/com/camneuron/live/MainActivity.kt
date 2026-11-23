@@ -1052,6 +1052,21 @@ class MainActivity : Activity() {
         }
         findViewById<View>(R.id.btn_widget_done).setOnClickListener { setEditingWidgets(false) }
         widgetAutoButton.setOnClickListener { autoLayoutWidgets() }
+        findViewById<View>(R.id.btn_widget_skip).setOnClickListener {
+            WidgetHost.skipDonation { widgets, skipped ->
+                val message = when {
+                    widgets == 0 -> R.string.toast_widget_skip_none
+                    skipped == 0 -> R.string.toast_widget_skip_nothing
+                    else -> R.string.toast_widget_skipped
+                }
+                Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+            }
+        }
+        findViewById<View>(R.id.btn_widget_reload).setOnClickListener {
+            val count = WidgetHost.reloadAll()
+            val message = if (count > 0) getString(R.string.toast_widget_reloaded, count) else getString(R.string.toast_widget_reload_none)
+            Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+        }
         // 방송 중에도 된다. 옮기거나 배율을 바꾸면 바로 저장되고, 방송 세션이 같은 설정을 보고 송출 화면에도 바로 반영한다.
         widgetsButton.setOnClickListener {
             showMore(false)

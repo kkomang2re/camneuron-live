@@ -38,6 +38,9 @@ object WidgetLayout {
     private val ALERT_WORDS = listOf("alert", "donation", "donate", "roulette", "후원", "알림", "도네", "룰렛")
     private val CHAT_WORDS = listOf("chat", "채팅")
 
+    /** 후원이 차례로 나오는 위젯인지 (후원 알림, 영상 후원). 재생 중인 것을 넘기는 대상이다. */
+    fun isDonation(kind: Kind): Boolean = kind == Kind.ALERT || kind == Kind.VIDEO
+
     /** 칸이 어떤 위젯인지. 브라우저 소스는 이름을 먼저, 없으면 주소를 본다 (예: toon.at/widget/alertbox → 후원 알림). */
     fun kind(index: Int, item: OverlayItem): Kind = when (index) {
         WidgetHost.CHAT -> Kind.CHAT

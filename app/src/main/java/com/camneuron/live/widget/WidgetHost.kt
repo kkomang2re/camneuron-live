@@ -21,7 +21,10 @@ import android.view.PixelCopy
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
@@ -45,6 +48,10 @@ import java.util.concurrent.CopyOnWriteArraySet
  * 가상 화면 전체의 출력(ImageReader)은 투명도가 없어 쓰지 않는다.
  *
  * 창을 복사하므로 두 위젯의 자리가 겹치면 겹친 곳에는 서로의 그림이 함께 담긴다 (반투명한 곳이 조금 진해질 뿐이다).
+ *
+ * 위젯 페이지가 말썽일 때: [skipDonation]은 후원 위젯에서 재생 중인 영상·소리를 끝으로 넘기고 (밀린 다음 후원은 남는다),
+ * [reloadAll]은 페이지를 다시 부른다. 페이지를 불러오지 못했으면 조금 뒤에 스스로 다시 부르고, 웹 페이지를 그리는
+ * 프로세스가 죽으면 (메모리 부족 등) 웹 뷰를 새로 만든다. 그 일을 처리하지 않으면 앱까지 함께 죽는다.
  *
  * 쓰는 쪽(화면, 방송 세션)이 [acquire]/[release]로 붙고 떨어진다. 아무도 없으면 웹 페이지를 닫는다.
  * 모든 함수와 리스너는 메인 스레드에서 돈다.
@@ -72,6 +79,12 @@ object WidgetHost {
     /** 마지막으로 바뀐 뒤 이만큼 지나 한 번 더 뜬다 (복사가 한 장 늦었어도 끝 모습이 남게). */
     private const val SETTLE_MS = 250L
     private const val MAX_COPY_FAILURES = 3
+
+    /** 페이지를 불러오지 못했을 때 다시 부르기까지 기다리는 시간. */
+    private const val RETRY_LOAD_MS = 5_000L
+
+    /** 후원 위젯에서 재생 중인 영상·소리를 넘기는 스크립트 (assets/widget_skip.js). 처음 쓸 때 읽는다. */
+    private var skipScript: String? = null
 
     /** 영상이 뜨기 전에 보일 그림: 투명한 점 하나. */
     private val EMPTY_POSTER: Bitmap = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
@@ -127,6 +140,39 @@ object WidgetHost {
         if (users == 0) return
         users--
         if (users == 0) stop()
+    }
+
+    /** 모든 위젯 페이지를 다시 부른다 (멈추거나 이상해졌을 때). 페이지가 쌓아 둔 후원은 사라질 수 있다. 다시 부른 위젯 수를 돌려준다. */
+    fun reloadAll(): Int {
+        checkMain()
+        var count = 0
+        slots.forEach { if (it != null && it.reload()) count++ }
+        return count
+    }
+
+    /**
+     * 후원 알림·영상 후원 위젯에서 지금 재생 중인 영상·소리를 끝으로 넘긴다. 페이지는 그대로라서 밀려 있던 다음 후원이
+     * 이어서 나온다. 끝나면 [onResult]에 후원 위젯 수와 넘긴 영상·소리의 수를 알린다 (메인 스레드).
+     * 페이지 안의 다른 사이트 영상(유튜브 말고)은 건드릴 수 없다. 그때는 [reloadAll]을 쓴다.
+     */
+    fun skipDonation(onResult: (widgets: Int, skipped: Int) -> Unit) {
+        checkMain()
+        val targets = slots.filterNotNull().filter { it.isDonation() }
+        val script = skipScript ?: runCatching {
+            context?.assets?.open("widget_skip.js")?.bufferedReader()?.use { it.readText() }
+        }.getOrNull()?.also { skipScript = it }
+        if (targets.isEmpty() || script == null) {
+            onResult(targets.size, 0)
+            return
+        }
+        var waiting = targets.size
+        var skipped = 0
+        for (slot in targets) {
+            slot.evaluate(script) { result ->
+                skipped += result?.trim()?.toIntOrNull() ?: 0
+                if (--waiting == 0) onResult(targets.size, skipped)
+            }
+        }
     }
 
     /** 위젯이 안 바뀌어도 다시 뜬다 (방송 세션이 새 인코더에 처음 얹을 때는 [latest]를 쓰면 된다). */
@@ -237,7 +283,7 @@ object WidgetHost {
     private fun checkMain() = check(Looper.myLooper() == Looper.getMainLooper()) { "WidgetHost: main thread only" }
 
     /** 위젯 하나: 자리 잡은 틀과 그 안의 웹 페이지, 그리고 그 그림을 뜨는 일. */
-    private class Slot(context: Context, private val index: Int) {
+    private class Slot(private val context: Context, private val index: Int) {
         private var destroyed = false
 
         /** 마지막으로 뜬 뒤에 페이지가 다시 그려졌는지. */
@@ -254,8 +300,10 @@ object WidgetHost {
         /** 소프트웨어로 뜨느라 우리가 그리는 중 (이때의 그리기는 "페이지가 바뀜"이 아니다). */
         private var drawingForCapture = false
 
+        private var webView: WebView = newWebView()
+
         @SuppressLint("SetJavaScriptEnabled")
-        val webView: WebView = object : WebView(context) {
+        private fun newWebView(): WebView = object : WebView(context) {
             override fun onDraw(canvas: Canvas) {
                 super.onDraw(canvas)
                 // 페이지가 다시 그려질 때마다 (영상이면 프레임마다) 불린다.
@@ -269,6 +317,22 @@ object WidgetHost {
             settings.mediaPlaybackRequiresUserGesture = false
             webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView, url: String?) = applyZoom()
+
+                override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
+                    // 페이지 자체를 불러오지 못했을 때만 (네트워크가 잠깐 끊긴 경우). 그대로 두면 빈 위젯으로 남는다.
+                    if (request.isForMainFrame) {
+                        Log.w(TAG, "widget $index failed to load (${error.errorCode}), retrying in ${RETRY_LOAD_MS}ms")
+                        main.removeCallbacks(retryRunnable)
+                        main.postDelayed(retryRunnable, RETRY_LOAD_MS)
+                    }
+                }
+
+                override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                    // 웹 페이지를 그리는 프로세스가 죽었다. true를 돌려주지 않으면 앱도 함께 죽는다. 이 웹 뷰는 더 쓸 수 없어 새로 만든다.
+                    Log.w(TAG, "widget $index renderer gone (crashed ${detail.didCrash()}), recreating the web view")
+                    main.post { recreate() }
+                    return true
+                }
             }
             webChromeClient = object : WebChromeClient() {
                 // 영상이 뜨기 전에 보이는 회색 재생 그림 대신 아무것도 안 보이게 한다 (방송 화면에 회색 칸이 뜨지 않게).
@@ -278,6 +342,9 @@ object WidgetHost {
             // 뚫어서, 창을 복사하면 영상 자리가 투명하게 나온다 (Galaxy S25 Ultra에서 확인). 웹 페이지를 자기 층에 그리게
             // 하면 WebView가 그 방식을 못 써서 영상을 페이지와 함께 창 안에 그린다.
             setLayerType(View.LAYER_TYPE_HARDWARE, null)
+            // 영상 후원은 위젯 페이지 안에 유튜브 같은 다른 사이트의 플레이어를 넣는다. 그 플레이어가 쿠키를 못 쓰면
+            // 재생을 거부하는 경우가 있어 허용한다 (OBS 브라우저 소스와 같게). 위젯 페이지에만 해당한다.
+            runCatching { CookieManager.getInstance().setAcceptThirdPartyCookies(this, true) }
         }
 
         val frame = FrameLayout(context).apply {
@@ -288,10 +355,40 @@ object WidgetHost {
             private set
         private var loadedUrl: String? = null
 
-        init {
-            // 영상 후원은 위젯 페이지 안에 유튜브 같은 다른 사이트의 플레이어를 넣는다. 그 플레이어가 쿠키를 못 쓰면
-            // 재생을 거부하는 경우가 있어 허용한다 (OBS 브라우저 소스와 같게). 위젯 페이지에만 해당한다.
-            runCatching { CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true) }
+        /** 불러오지 못한 페이지를 다시 부른다. */
+        private val retryRunnable = Runnable { if (!destroyed) loadedUrl?.let { webView.loadUrl(it) } }
+
+        /** 후원 알림이나 영상 후원인지 ([WidgetHost.skipDonation]의 대상). */
+        fun isDonation(): Boolean {
+            val current = item ?: return false
+            return WidgetLayout.isDonation(WidgetLayout.kind(index, current))
+        }
+
+        /** 페이지를 처음부터 다시 부른다. 주소가 없으면 false. */
+        fun reload(): Boolean {
+            val url = loadedUrl
+            if (destroyed || url == null) return false
+            main.removeCallbacks(retryRunnable)
+            webView.loadUrl(url)
+            markDirty()
+            return true
+        }
+
+        /** 페이지에서 [script]를 돌리고 결과(JSON 글자)를 [onResult]에 넘긴다. */
+        fun evaluate(script: String, onResult: (String?) -> Unit) {
+            if (destroyed) onResult(null) else webView.evaluateJavascript(script) { onResult(it) }
+        }
+
+        /** 웹 뷰를 새로 만들어 같은 주소를 다시 부른다 (그리는 프로세스가 죽은 웹 뷰는 다시 쓸 수 없다). */
+        private fun recreate() {
+            if (destroyed) return
+            val old = webView
+            frame.removeView(old)
+            runCatching { old.destroy() }
+            webView = newWebView()
+            frame.addView(webView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            loadedUrl?.let { webView.loadUrl(it) }
+            markDirty()
         }
 
         fun bind(next: OverlayItem) {
@@ -415,6 +512,7 @@ object WidgetHost {
             destroyed = true
             main.removeCallbacks(captureRunnable)
             main.removeCallbacks(settleRunnable)
+            main.removeCallbacks(retryRunnable)
             webView.stopLoading()
             webView.destroy()
         }
