@@ -83,7 +83,7 @@ object WidgetHost {
     /** 페이지를 불러오지 못했을 때 다시 부르기까지 기다리는 시간. */
     private const val RETRY_LOAD_MS = 5_000L
 
-    /** 위젯 페이지에 넣는 스크립트 (assets의 widget_time.js와 widget_skip.js). 처음 쓸 때 읽는다. */
+    /** 위젯 페이지에 넣는 스크립트 (assets/widget_time.js). 처음 쓸 때 읽는다. */
     private var pageScript: String? = null
 
     /**
@@ -91,10 +91,7 @@ object WidgetHost {
      * 감는다. 여러 번 넣어도 한 번만 걸린다. 읽지 못하면 null.
      */
     private fun pageScript(): String? = pageScript ?: runCatching {
-        val assets = context?.assets ?: return@runCatching null
-        listOf("widget_time.js", "widget_skip.js").joinToString("\n") { name ->
-            assets.open(name).bufferedReader().use { it.readText() }
-        }
+        context?.assets?.open("widget_time.js")?.bufferedReader()?.use { it.readText() }
     }.onFailure { Log.w(TAG, "widget page script unavailable", it) }.getOrNull()?.also { pageScript = it }
 
     /** 영상이 뜨기 전에 보일 그림: 투명한 점 하나. */
@@ -162,8 +159,8 @@ object WidgetHost {
     }
 
     /**
-     * 후원 위젯에서 지금 나오는 후원을 넘긴다. 누르는 즉시 그 위젯을 가리고 소리를 끈 뒤 (방송 화면에서 바로 사라진다),
-     * 후원이 바뀌면 다시 보인다. 페이지는 그대로라서 밀려 있던 다음 후원이 이어서 나온다.
+     * 후원 위젯에서 지금 나오는 후원 하나를 넘긴다. 누르는 즉시 그 위젯을 가리고 소리를 끈 뒤 (방송 화면에서 바로 사라진다),
+     * 그 후원이 끝나는 순간 다시 보인다. 후원이 줄지어 밀려 있어도 하나만 넘어가고 다음 것은 처음부터 제대로 나온다.
      * - 후원마다 정해진 시간이 지나야 넘어가는 위젯은 페이지의 시계를 빨리 감아 바로 넘어가게 한다 (1~2초).
      * - 재생 시간을 서버가 재는 위젯([WidgetLayout.isServerTimed], 치지직 영상 후원)은 앞당길 수 없다. 가린 채로 서버가
      *   다음 후원을 보내기를 기다린다.

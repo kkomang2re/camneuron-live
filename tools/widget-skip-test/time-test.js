@@ -1,12 +1,11 @@
 // 위젯 시계 감기 스크립트(app/src/main/assets/widget_time.js)를 실제 Chromium에서 시험한다.
 // 후원 위젯이 다음 후원으로 넘어가는 여러 방식을 흉내 낸 페이지를 만들고, 넘기기가 지금 것만 넘기고 다음 것의 시간은
 // 거의 깎지 않는지 본다. 넘기지 않을 때 타이머·시계가 원래대로 도는지도 본다.
-//   node tools/widget-skip-test/time-test.js app/src/main/assets/widget_time.js app/src/main/assets/widget_skip.js
-//   (playwright가 깔려 있어야 한다. 앱은 두 스크립트를 이 순서로 함께 넣는다.)
+//   node tools/widget-skip-test/time-test.js app/src/main/assets/widget_time.js     (playwright가 깔려 있어야 한다)
 const { chromium } = require('playwright');
 const http = require('http');
 const fs = require('fs');
-const script = fs.readFileSync(process.argv[2], 'utf8') + '\n' + fs.readFileSync(process.argv[3], 'utf8');
+const script = fs.readFileSync(process.argv[2], 'utf8');
 
 const wav = `
 function wav(seconds) {
@@ -26,6 +25,7 @@ function started(id) { window.current = id; window.log.push([id, Date.now()]); }
 window.commands = [];
 window.addEventListener('message', function (e) { try { var d = JSON.parse(e.data); if (d.echo) window.commands.push(d.echo); } catch (x) {} });
 var serverTimer = window.setTimeout.bind(window); // 스크립트를 넣기 전의 타이머: 페이지가 손댈 수 없는 것(서버)을 대신한다
+var serverEvery = window.setInterval.bind(window);
 `;
 const pages = {
   // 영상을 산 시간만큼 되풀이해 돌리고 타이머로 넘어간다 (치지직 영상 후원처럼)
@@ -100,6 +100,74 @@ const pages = {
     window.begin = next;
   </script></body>`,
 };
+// --- 후원이 줄지어 밀려 있는 경우 (넘기기는 하나만 넘겨야 한다)
+// 내용이 똑같은 후원 알림이 이어진다 (테스트 알림을 여러 번 누른 것처럼). 페이지는 후원마다 새로 그린다.
+// 효과음은 같은 것을 다시 쓰고, 2초 뒤에 읽어 주는 소리가 시작되고, 남은 시간을 숫자로 세고, 화면은 계속 움직이고,
+// 연결 확인 같은 긴 타이머도 걸려 있다. gap이 0이면 틈 없이 바로 다음 것으로 바뀐다. sound가 false면 소리 없이 글자·그림만.
+const alertQueue = (gap, sound) => `<body><div id="root"></div><script>${wav}${common}
+  window.queue = ['a', 'b', 'c', 'd']; window.DURATION = 8000;
+  var sfx = new Audio(wav(3)); sfx.id = 'sfx'; document.body.appendChild(sfx);
+  var spin = 0;
+  function next() {
+    var id = window.queue.shift(); var root = document.getElementById('root');
+    if (!id) { root.innerHTML = ''; window.current = null; return; }
+    root.innerHTML = '<div class="alert"><img alt="" width="40" height="40" src="data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAACAkQBADs="><b>시청자</b>님이 1,000원 후원 <p>테스트 후원입니다</p><i id="left"></i></div>';
+    started(id);
+    if (${sound}) { sfx.currentTime = 0; sfx.play(); }
+    var end = Date.now() + window.DURATION;
+    var count = setInterval(function () { var l = document.getElementById('left'); if (l) l.textContent = Math.max(0, Math.ceil((end - Date.now()) / 1000)) + '초'; }, 100);
+    var tts = null;
+    if (${sound}) setTimeout(function () { tts = new Audio(wav(4)); tts.className = 'tts'; document.body.appendChild(tts); tts.play(); }, 2000);
+    setTimeout(function () {
+      clearInterval(count); if (tts) { tts.pause(); tts.remove(); }
+      if (${gap} > 0) { root.innerHTML = ''; setTimeout(next, ${gap}); } else next();
+    }, window.DURATION);
+  }
+  window.begin = function () {
+    setTimeout(function () { window.watchdog = true; }, 45000);
+    setInterval(function () { document.body.dataset.spin = String(spin++); }, 16);
+    next();
+  };
+</script></body>`;
+pages.queue = alertQueue(0, true);
+pages.queuegap = alertQueue(300, true);
+pages.plainqueue = alertQueue(0, false);
+// 읽어 주는 소리가 끝나야 다음 후원으로 넘어가는 알림
+pages.ttsqueue = `<body><div id="root"></div><script>${wav}${common}
+  window.queue = ['a', 'b', 'c', 'd']; window.DURATION = 20000;
+  function next() {
+    var id = window.queue.shift(); var root = document.getElementById('root');
+    if (!id) { root.innerHTML = ''; window.current = null; return; }
+    root.innerHTML = '<div><b>시청자</b>님 후원: 안녕하세요</div>'; started(id);
+    var tts = new Audio(wav(20)); tts.className = 'tts'; document.body.appendChild(tts); tts.play();
+    tts.addEventListener('ended', function () { tts.remove(); root.innerHTML = ''; setTimeout(next, 200); });
+  }
+  window.begin = next;
+</script></body>`;
+// 영상 후원이 이어진다: 플레이어 하나에 영상만 바꾸고, 글자는 같은 것을 그 자리에 다시 쓴다 (페이지만 봐서는 알 수 없다).
+pages.videoqueue = `<body><iframe id="p" src="PLAYER"></iframe><div id="label"></div><script>${common}
+  window.queue = ['a', 'b', 'c', 'd'];
+  function next() {
+    var id = window.queue.shift();
+    if (!id) { window.current = null; document.getElementById('label').textContent = ''; return; }
+    document.getElementById('p').contentWindow.postMessage(JSON.stringify({ load: id }), '*');
+    document.getElementById('label').textContent = '시청자님 영상 후원'; started(id);
+    setTimeout(next, window.DURATION);
+  }
+  window.begin = function () { setTimeout(function () { window.watchdog = true; }, 45000); next(); };
+</script></body>`;
+// 서버가 시간을 재는 영상 후원이 이어진다 (6초씩). 그동안 위젯은 같은 영상을 2초마다 처음부터 다시 불러온다.
+pages.serverqueue = `<body><iframe id="p" src="PLAYER"></iframe><script>${common}
+  window.queue = ['a', 'b', 'c', 'd']; window.DURATION = 6000;
+  function load(id) { document.getElementById('p').contentWindow.postMessage(JSON.stringify({ load: id }), '*'); }
+  function next() {
+    var id = window.queue.shift(); if (!id) { window.current = null; return; }
+    load(id); started(id);
+    serverTimer(next, window.DURATION);
+  }
+  window.begin = function () { serverEvery(function () { if (window.current) load(window.current); }, 2000); next(); };
+</script></body>`;
+
 const playerFrame = `<script>
 window.addEventListener('message', function (e) {
   var d; try { d = JSON.parse(e.data); } catch (x) { return; }
@@ -224,6 +292,72 @@ window.addEventListener('message', function (e) {
     await page.waitForFunction(() => window.current === 'b' && !window.__camneuronTime.skipping(), null, { timeout: 15000 }).catch(() => {});
     const end = await page.evaluate(() => ({ current: window.current, queue: window.queue.join(), commands: window.commands.slice(), opacity: getComputedStyle(document.documentElement).opacity }));
     check('wait only: visible and unmuted again when the server sends the next donation', end.current === 'b' && end.queue === 'c' && end.opacity === '1' && end.commands[end.commands.length - 1] === 'unMute', JSON.stringify(end));
+    await page.close();
+  }
+
+  // --- 후원이 줄지어 밀려 있을 때: 넘기기 한 번에 하나만 넘어가고, 다음 것은 제대로 나온다. 두 번 누르면 두 개.
+  const visible = (page) => page.evaluate(() => getComputedStyle(document.documentElement).opacity === '1' && !window.__camneuronTime.hidden());
+  const lost = (page, id) => page.evaluate((x) => { const e = window.log.find(l => l[0] === x); return e ? Date.now() - e[1] : -1; }, id);
+  for (const kind of ['queue', 'queuegap', 'plainqueue', 'ttsqueue', 'videoqueue']) {
+    const page = await browser.newPage();
+    await page.goto(base + kind);
+    await page.evaluate(script);
+    await page.evaluate(() => window.begin());
+    await page.waitForFunction(() => window.current === 'a');
+    const plan = [['b', 700], ['c', 3200]]; // 두 번째는 후원 도중에 읽어 주는 소리가 시작된 뒤에 누른다
+    for (const [expected, wait] of plan) {
+      await page.waitForTimeout(wait);
+      const pressed = Date.now();
+      const answer = await page.evaluate(() => window.__camneuronTime.skip(true));
+      await page.waitForFunction((x) => window.current === x && !window.__camneuronTime.skipping(), expected, { timeout: 15000 }).catch(() => {});
+      const took = Date.now() - pressed;
+      const used = await lost(page, expected);
+      const st = await page.evaluate(() => ({ current: window.current, queue: window.queue.join(), watchdog: !!window.watchdog, commands: window.commands.join(',') }));
+      check(`${kind}: one press skips exactly one (now '${expected}')`, answer === 'started' && st.current === expected && st.queue === (expected === 'b' ? 'c,d' : 'd'), JSON.stringify(st));
+      check(`${kind}: it is skipped quickly (${took} ms)`, took <= 3000);
+      check(`${kind}: '${expected}' keeps its time (lost ${used} ms)`, used >= 0 && used <= 700);
+      check(`${kind}: '${expected}' is visible`, await visible(page));
+      if (kind === 'plainqueue') check(`${kind}: far-off timers are not fired`, !st.watchdog);
+      if (kind === 'queue' || kind === 'queuegap') {
+        const sound = await page.evaluate(() => { const s = document.getElementById('sfx'); return { muted: s.muted, paused: s.paused, time: s.currentTime }; });
+        check(`${kind}: the sound effect of '${expected}' plays (not muted, not cut)`, !sound.muted && !sound.paused && sound.time < 1.5, JSON.stringify(sound));
+        check(`${kind}: far-off timers are not fired`, !st.watchdog);
+      }
+      if (kind === 'ttsqueue') {
+        const tts = await page.evaluate(() => { const t = document.querySelector('audio.tts'); return t ? { muted: t.muted, paused: t.paused, time: t.currentTime } : null; });
+        check(`${kind}: the voice of '${expected}' plays from its start`, tts && !tts.muted && !tts.paused && tts.time < 1.5, JSON.stringify(tts));
+      }
+      if (kind === 'videoqueue') check(`${kind}: the player is unmuted again`, /mute.*unMute$/.test(st.commands), st.commands);
+    }
+    // 그대로 두면 지금 것이 계속 나온다
+    await page.waitForTimeout(1500);
+    check(`${kind}: nothing else is skipped afterwards`, await page.evaluate(() => window.current) === 'c' && await visible(page));
+    await page.close();
+  }
+
+  // --- 서버가 시간을 재는 영상 후원이 이어질 때 (치지직 영상 후원으로 보이는 것)
+  {
+    const page = await browser.newPage();
+    await page.goto(base + 'serverqueue');
+    await page.evaluate(script);
+    await page.evaluate(() => window.begin());
+    await page.waitForFunction(() => window.current === 'a');
+    await page.waitForTimeout(700);
+    await page.evaluate(() => window.__camneuronTime.skip(true, true));
+    await page.waitForTimeout(4300); // 그 사이 같은 영상을 두 번 다시 불러왔다
+    const mid = await page.evaluate(() => ({ current: window.current, hidden: window.__camneuronTime.hidden() }));
+    check('serverqueue: replays of the skipped video stay hidden', mid.current === 'a' && mid.hidden, JSON.stringify(mid));
+    await page.waitForFunction(() => window.current === 'b' && !window.__camneuronTime.skipping(), null, { timeout: 8000 }).catch(() => {});
+    const used = await lost(page, 'b');
+    const st = await page.evaluate(() => ({ current: window.current, queue: window.queue.join(), commands: window.commands.join(',') }));
+    check(`serverqueue: the next video is shown and unmuted as soon as it starts (after ${used} ms)`, st.current === 'b' && await visible(page) && used <= 900 && /unMute$/.test(st.commands), JSON.stringify(st));
+    await page.waitForTimeout(2600); // 'b'도 한 번 다시 불러왔다: 넘기지 않은 것은 가리지 않는다
+    check('serverqueue: the next video stays visible, also when it replays', await page.evaluate(() => window.current) === 'b' && await visible(page));
+    await page.evaluate(() => window.__camneuronTime.skip(true, true));
+    await page.waitForTimeout(300);
+    check('serverqueue: a second press hides the second video', !(await visible(page)));
+    await page.waitForFunction(() => window.current === 'c' && !window.__camneuronTime.skipping(), null, { timeout: 8000 }).catch(() => {});
+    check('serverqueue: and the third one is shown', await page.evaluate(() => window.current) === 'c' && await visible(page) && await page.evaluate(() => window.queue.join()) === 'd');
     await page.close();
   }
 

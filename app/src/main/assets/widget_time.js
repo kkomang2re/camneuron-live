@@ -142,52 +142,65 @@
   }
 
   // --------------------------------------------------------------------------------------------
-  // 후원이 바뀌었는지 알아보는 것: 보이는 영상·소리·안쪽 페이지, 유튜브 플레이어가 알리는 상태, 화면에 내용이 있는지.
+  // 지금 나오는 후원이 끝났는지 알아보는 것.
+  //
+  // 후원이 줄지어 밀려 있으면 하나가 끝나자마자 다음 것이 나온다. 넘기기는 딱 하나만 넘겨야 하므로, 시간을 감는 동안
+  // 타이머 하나가 돌 때마다 바로 살펴 "지금 것이 끝난 순간"에 멈춘다 (뭉텅이로 감고 나서 보면 다음 후원까지 감긴다).
+  // 끝났다고 보는 때:
+  //   - 넘기기 시작할 때 보이던 것들(글자, 그림, 영상)이 절반 넘게 없어지거나 안 보이게 됐다
+  //     (내용이 똑같은 후원이 이어져도 페이지는 새로 그리므로 알 수 있다)
+  //   - 글자가 다른 글자로 바뀌었다 (한 글자씩 이어서 나오는 것과 남은 시간을 세는 숫자는 같은 후원으로 본다)
+  //   - 보이는 영상·플레이어가 다른 것으로 바뀌었다
+  //   - 유튜브 플레이어가 다른 영상을 불러왔다고 알렸다
+  // 후원 도중에 읽어 주는 소리가 시작되거나 효과음이 끝나는 것은 끝난 것으로 보지 않는다.
 
   function visible(element) {
     try { return element.getClientRects().length > 0; } catch (e) { return false; }
   }
 
-  // [state]가 false면 재생 중인지 같은 상태는 빼고 무엇이 있는지만 적는다 (우리가 끝으로 넘긴 것을 "바뀌었다"고 보지 않게).
-  function describe(doc, out, state) {
+  // 보이는 영상과 안쪽 페이지(플레이어)의 주소들.
+  function visuals(doc, out) {
     var i;
-    var media = doc.querySelectorAll('video, audio');
-    for (i = 0; i < media.length; i++) {
-      var m = media[i];
-      out.push((m.currentSrc || m.src || '') + (state ? '|' + (m.paused ? 'p' : 'r') + (m.ended ? 'e' : '') : '') +
-        (m.tagName === 'VIDEO' && !visible(m) ? '|h' : ''));
-    }
+    var videos = doc.querySelectorAll('video');
+    for (i = 0; i < videos.length; i++) if (visible(videos[i])) out.push('v:' + (videos[i].currentSrc || videos[i].src || ''));
     var frames = doc.querySelectorAll('iframe');
     for (i = 0; i < frames.length; i++) {
-      out.push('f:' + (frames[i].src || '') + (visible(frames[i]) ? '' : '|h'));
-      try { if (frames[i].contentDocument) describe(frames[i].contentDocument, out, state); } catch (e) {}
+      if (visible(frames[i])) out.push('f:' + (frames[i].src || ''));
+      try { if (frames[i].contentDocument) visuals(frames[i].contentDocument, out); } catch (e) {}
     }
+    return out;
+  }
+
+  // 보이는 글자. 남은 시간을 세는 숫자와 빈칸은 뺀다.
+  function mainText() {
+    try { return (document.body && document.body.innerText || '').replace(/[0-9\s]/g, '').slice(0, 600); } catch (e) { return ''; }
   }
 
   // 화면에 보이는 것이 있는지 (후원 위젯은 후원이 없을 때 비어 있다).
   function hasContent() {
     try {
-      var text = (document.body && document.body.innerText || '').replace(/\s+/g, '');
-      if (text.length > 0) return true;
+      if (mainText().length > 0) return true;
       var things = document.querySelectorAll('img, video, iframe, canvas, svg');
       for (var i = 0; i < things.length; i++) if (visible(things[i])) return true;
     } catch (e) {}
     return false;
   }
 
-  function signature() {
+  // 지금 보이는 것들: 글자를 직접 담은 요소와 그림·영상. 넘기기를 시작할 때 적어 두고, 이것들이 없어지는지 본다.
+  function shownNodes() {
     var out = [];
-    try { describe(document, out, true); } catch (e) {}
-    return out.join('\n') + '\n#' + (hasContent() ? 1 : 0);
-  }
-
-  // 무엇이 나오고 있는지: 영상·소리·안쪽 페이지의 주소와 보이는 글자. 남은 시간을 세는 숫자는 뺀다.
-  function contents() {
-    var out = [];
-    try { describe(document, out, false); } catch (e) {}
-    var text = '';
-    try { text = (document.body && document.body.innerText || '').replace(/[0-9]/g, '').replace(/\s+/g, ' ').slice(0, 400); } catch (e) {}
-    return out.join('\n') + '\n#' + text;
+    try {
+      var all = document.body ? document.body.querySelectorAll('*') : [];
+      for (var i = 0; i < all.length && out.length < 80; i++) {
+        var el = all[i];
+        var own = /^(IMG|VIDEO|IFRAME|CANVAS|SVG)$/i.test(el.tagName);
+        for (var c = el.firstChild; c && !own; c = c.nextSibling) {
+          if (c.nodeType === 3 && /\S/.test(c.nodeValue)) own = true;
+        }
+        if (own && visible(el)) out.push(el);
+      }
+    } catch (e) {}
+    return out;
   }
 
   // 재생 중인 영상·소리나 보이는 안쪽 페이지(플레이어)가 있는지.
@@ -205,37 +218,111 @@
     return false;
   }
 
-  // 유튜브 플레이어는 상태가 바뀌면 바깥 페이지에 알린다. 새 영상을 불러오면 "시작 전"(-1)이나 "준비됨"(5)을 거치고
-  // 영상 번호가 바뀐다. "끝남"(0)은 같은 영상을 되풀이할 때도 오므로 세지 않는다.
-  var newVideos = 0;
+  // 유튜브 플레이어는 상태가 바뀌면 바깥 페이지에 알린다. 늘 받아 적어 둔다.
+  // 새 영상을 불러오면 "시작 전"(-1)이나 "준비됨"(5)을 거치고 영상 번호가 바뀐다. 같은 영상을 처음부터 다시 돌릴 때도
+  // -1이 올 수 있어, 영상 번호를 아는 플레이어면 번호가 바뀌어야 새 후원으로 본다. "끝남"(0)은 세지 않는다.
+  var player = { id: null, loads: 0, idChanges: 0 };
   window.addEventListener('message', function (event) {
-    if (!skipping || typeof event.data !== 'string' || event.data.charAt(0) !== '{') return;
+    if (typeof event.data !== 'string' || event.data.charAt(0) !== '{') return;
     try {
       var data = JSON.parse(event.data);
-      if (data.event === 'onStateChange' && (data.info === -1 || data.info === 5)) newVideos++;
+      if (data.event === 'onStateChange' && (data.info === -1 || data.info === 5)) player.loads++;
       if (data.event === 'infoDelivery' && data.info && data.info.videoData && data.info.videoData.video_id) {
-        if (skipping.videoId && skipping.videoId !== data.info.videoData.video_id) newVideos++;
-        skipping.videoId = data.info.videoData.video_id;
+        if (player.id && player.id !== data.info.videoData.video_id) player.idChanges++;
+        player.id = data.info.videoData.video_id;
       }
     } catch (e) {}
   });
+
+  // 페이지가 바뀌었는지 (타이머가 돈 뒤에 바뀐 것이 없으면 다시 살피지 않는다).
+  var observer = null;
+  var mutated = false;
+  function touched() {
+    if (observer && observer.takeRecords().length > 0) mutated = true;
+    var was = mutated;
+    mutated = false;
+    return was;
+  }
+
+  var base = null; // 넘기기를 시작할 때의 모습
+
+  function remember() {
+    base = {
+      text: mainText(), visuals: visuals(document, []).join('\n'), content: hasContent(), nodes: shownNodes(),
+      loads: player.loads, idChanges: player.idChanges, loadSeenAt: 0,
+      media: [], // 그때 재생 중이던 영상·소리 (이 후원의 것)
+    };
+    try {
+      var media = document.querySelectorAll('video, audio');
+      for (var i = 0; i < media.length; i++) {
+        if (!media[i].paused && !media[i].ended) base.media.push({ element: media[i], src: media[i].currentSrc || media[i].src || '' });
+      }
+    } catch (e) {}
+  }
+
+  // 이 후원의 영상·소리(넘기기를 시작할 때 재생 중이던 것)가 모두 끝났거나 없어졌는가.
+  function ownMediaDone() {
+    if (base.media.length === 0) return false;
+    for (var i = 0; i < base.media.length; i++) {
+      var m = base.media[i].element;
+      if (m.isConnected && !m.paused && !m.ended && (m.currentSrc || m.src || '') === base.media[i].src) return false;
+    }
+    return true;
+  }
+
+  // 지금 나오던 후원이 끝났는가 (페이지를 바로 살펴 안다).
+  function ended() {
+    // 보이는 것 없이 소리만 내는 위젯은 그 소리로 안다. 보이는 것이 있으면 소리는 보지 않는다
+    // (후원 도중에 효과음이 끝나거나 읽어 주는 소리가 시작되는 것은 끝난 것이 아니다).
+    if (base.nodes.length === 0 && !base.content) return ownMediaDone();
+    if (base.nodes.length > 0) {
+      var gone = 0;
+      for (var i = 0; i < base.nodes.length; i++) if (!base.nodes[i].isConnected || !visible(base.nodes[i])) gone++;
+      if (gone * 2 > base.nodes.length) return true;
+    }
+    if (base.content && !hasContent()) return true;
+    if (visuals(document, []).join('\n') !== base.visuals) return true;
+    var text = mainText();
+    if (text !== base.text) {
+      if (text.indexOf(base.text) === 0) base.text = text; // 글자가 이어서 나오는 중
+      else if (text === '' || base.text.indexOf(text) !== 0) return true;
+    }
+    return false;
+  }
+
+  // 플레이어가 알린 것으로 본 결과: 'changed' 다른 영상이다, 'unsure' 새로 불러오긴 했는데 같은 영상인지 아직 모른다, 'same'.
+  function playerState() {
+    if (player.idChanges > base.idChanges) return 'changed';
+    if (player.loads > base.loads) {
+      if (player.id === null) return 'changed'; // 영상 번호를 알려 주지 않는 플레이어
+      if (base.loadSeenAt === 0) base.loadSeenAt = NativeDate.now();
+      if (NativeDate.now() - base.loadSeenAt < SAME_VIDEO_MS) return 'unsure';
+      // 번호가 그대로다: 같은 영상을 처음부터 다시 돌린 것이다.
+      base.loads = player.loads;
+      base.loadSeenAt = 0;
+    }
+    return 'same';
+  }
 
   // --------------------------------------------------------------------------------------------
   // 가리기: 넘기는 동안 페이지를 통째로 안 보이게 하고 소리를 끈다. 후원이 바뀌면 되돌린다.
   // 후원의 재생 시간을 서버가 재는 위젯(치지직 영상 후원)은 시계를 감아도 넘어가지 않는다. 그때도 방송 화면에서는 바로
   // 사라지고, 서버가 다음 후원을 보내면 다시 보인다.
 
-  var hidden = null; // { opacity, priority, media: [소리를 끈 것], frames: [소리를 끄라고 한 유튜브 플레이어] }
+  var hidden = null; // { opacity, priority, media: [소리를 끈 것과 그때의 주소], frames: [소리를 끄라고 한 유튜브 플레이어] }
 
-  function tell(frame, func) {
-    try { frame.contentWindow.postMessage(JSON.stringify({ event: 'command', func: func, args: [] }), '*'); } catch (e) {}
+  function tell(frame, func, args) {
+    try { frame.contentWindow.postMessage(JSON.stringify({ event: 'command', func: func, args: args || [] }), '*'); } catch (e) {}
   }
 
   function muteIn(doc) {
     var i;
     var media = doc.querySelectorAll('video, audio');
     for (i = 0; i < media.length; i++) {
-      if (!media[i].muted) { media[i].muted = true; hidden.media.push(media[i]); }
+      if (!media[i].muted) {
+        media[i].muted = true;
+        hidden.media.push({ element: media[i], src: media[i].currentSrc || media[i].src || '', time: media[i].currentTime });
+      }
     }
     var frames = doc.querySelectorAll('iframe');
     for (i = 0; i < frames.length; i++) {
@@ -254,6 +341,31 @@
     try { muteIn(document); } catch (e) {}
   }
 
+  // 소리를 껐던 것을 되돌린다. 넘긴 후원의 소리가 아직 나오고 있으면 (화면은 끝났는데 읽어 주는 소리가 남은 경우)
+  // 그 소리는 끝으로 넘기고, 끝나거나 다른 것을 불러올 때 소리를 켠다 (같은 것을 다음 후원에도 쓰는 페이지가 있다).
+  function unmute(entry) {
+    var m = entry.element;
+    try {
+      var same = (m.currentSrc || m.src || '') === entry.src;
+      // 멈췄거나, 다른 것을 불러왔거나, 처음부터 다시 재생한 것(다음 후원이 같은 효과음을 쓴다)은 바로 켠다.
+      if (!m.isConnected || m.paused || m.ended || !same || m.currentTime < entry.time) { m.muted = false; return; }
+      var done = false;
+      var restore = function () {
+        if (done) return;
+        done = true;
+        m.muted = false;
+        m.removeEventListener('ended', restore); m.removeEventListener('pause', restore);
+        m.removeEventListener('loadstart', restore); m.removeEventListener('emptied', restore);
+      };
+      m.addEventListener('ended', restore); m.addEventListener('pause', restore);
+      m.addEventListener('loadstart', restore); m.addEventListener('emptied', restore);
+      if (!m.loop && isFinite(m.duration) && m.duration > 0) m.currentTime = m.duration;
+      nativeSetTimeout(restore, LEFTOVER_SOUND_MS);
+    } catch (e) {
+      try { m.muted = false; } catch (e2) {}
+    }
+  }
+
   function show() {
     if (!hidden) return;
     var was = hidden;
@@ -261,73 +373,159 @@
     var style = document.documentElement.style;
     if (was.opacity) style.setProperty('opacity', was.opacity, was.priority); else style.removeProperty('opacity');
     var i;
-    for (i = 0; i < was.media.length; i++) { try { was.media[i].muted = false; } catch (e) {} }
+    for (i = 0; i < was.media.length; i++) unmute(was.media[i]);
     for (i = 0; i < was.frames.length; i++) tell(was.frames[i], 'unMute');
   }
 
+  // 시계를 감아도 끝나지 않을 때: 이 후원의 영상·소리(넘기기를 시작할 때 재생 중이던 것)를 끝으로 넘긴다.
+  // 재생이 끝나야 다음으로 넘어가는 위젯을 위한 것이다. 그 뒤에 시작된 것(다음 후원일 수 있다)은 건드리지 않는다.
+  function endOwnMedia() {
+    for (var i = 0; i < base.media.length; i++) {
+      var m = base.media[i].element;
+      try {
+        if (!m.isConnected || m.ended || (m.currentSrc || m.src || '') !== base.media[i].src) continue;
+        if (!m.paused && isFinite(m.duration) && m.duration > 0) {
+          m.currentTime = m.duration;
+        } else {
+          try { m.pause(); } catch (e) {}
+          m.dispatchEvent(new Event('ended'));
+        }
+      } catch (e) {}
+    }
+    if (player.idChanges === base.idChanges) {
+      try {
+        var frames = document.querySelectorAll('iframe');
+        for (var j = 0; j < frames.length; j++) {
+          if (/youtube(-nocookie)?\.com\/embed\//.test(frames[j].src || '')) tell(frames[j], 'seekTo', [86400, true]);
+        }
+      } catch (e) {}
+    }
+  }
+
   var STEP_MS = 1000; // 한 번에 흘려보내는 페이지 시간
+  var STEP_FIRES = 300; // 한 번에 돌리는 타이머 수
   var STEP_REAL_MS = 40; // 그 사이에 페이지가 반응할 틈 (실제 시간)
-  var MAX_MS = 10 * 60 * 1000; // 넘기기 한 번에 많아야 이만큼 감는다
-  var MAX_BLIND_MS = 3 * 60 * 1000; // 끝나는 때를 짐작할 타이머가 없을 때는 이만큼
+  var SETTLE_REAL_MS = 90; // 후원이 끝나는 때일 수 있는 타이머를 돌린 뒤 플레이어의 알림을 기다리는 시간
+  var MAX_WIND_MS = 3 * 60 * 1000; // 넘기기 한 번에 이만큼 감는다 (더 오래 남은 타이머가 걸려 있으면 그때까지)
   var LONG_MS = 1500; // 이보다 오래 남은 타이머가 후원이 끝나는 때일 수 있다
+  var MEDIA_AFTER_MS = 5000; // 끝나는 때일 수 있는 타이머가 다 지나고 이만큼 더 감아도 그대로면 영상·소리를 끝으로 넘긴다
   var WAIT_STEP_MS = 250; // 가린 채로 후원이 바뀌기를 기다리며 살피는 간격
   var MAX_WAIT_MS = 15 * 60 * 1000; // 이만큼 기다려도 그대로면 다시 보인다
+  var SAME_VIDEO_MS = 1500; // 새로 불러온 영상의 번호를 이만큼 기다려 본다
+  var LEFTOVER_SOUND_MS = 5000; // 넘긴 후원의 남은 소리를 이만큼 지나면 다시 켠다
 
-  // 지금 나오는 후원을 넘긴다. [hideIt]이면 넘어갈 때까지 페이지를 가리고 소리를 끈다.
-  // [waitOnly]면 1·2를 건너뛴다: 서버가 시간을 재는 것으로 알려진 위젯은 시계를 감아 봐야 연결 유지 타이머만 앞당겨진다.
-  //   1. 후원이 바뀔 때까지 페이지의 시간을 빨리 감는다 (시간으로 넘어가는 위젯은 여기서 바로 넘어간다).
-  //   2. 다 감아도 그대로면 재생 중인 것을 끝으로 넘겨 본다 (재생이 끝나야 넘어가는 위젯).
+  // 지금 나오는 후원 하나를 넘긴다. [hideIt]이면 넘어갈 때까지 페이지를 가리고 소리를 끈다.
+  //   1. 페이지의 시간을 빨리 감는다. 타이머가 돌 때마다 살펴 이 후원이 끝난 순간에 멈춘다
+  //      (시간으로 넘어가는 위젯은 여기서 넘어간다. 다음 후원은 감지 않는다).
+  //   2. 다 감아도 그대로면 이 후원의 영상·소리를 끝으로 넘겨 본다 (재생이 끝나야 넘어가는 위젯).
   //   3. 그래도 그대로면 가린 채로 기다린다 (서버가 시간을 재는 위젯). 후원이 바뀌면 다시 보인다.
+  // [waitOnly]면 1·2를 건너뛴다: 서버가 시간을 재는 것으로 알려진 위젯은 시계를 감아 봐야 연결 유지 타이머만 앞당겨진다.
   // 돌려주는 값:
   //   'started'  넘기기 시작했다
   //   'idle'     나오는 후원이 없다 (화면이 비어 있고 재생 중인 것도, 기다리는 긴 타이머도 없다)
   //   'busy'     이미 넘기는 중이다
   function skip(hideIt, waitOnly) {
     if (skipping) return 'busy';
-    var start = signature();
-    var startContents = contents();
-    var limit = 0;
+    // 후원이 끝나는 때일 수 있는 타이머: 지금 걸려 있는 것 가운데 오래 남은 것. 이것을 돌린 뒤에는 잠깐 멈춰 살핀다.
+    var candidates = {};
+    var left = 0; // 아직 돌지 않은 그런 타이머 수
+    var longest = 0;
     for (var id in timers) {
       var t = timers[id];
-      if (t.period === 0 && t.due - now() >= LONG_MS) limit = Math.max(limit, t.due - now());
+      if (t.period === 0 && t.due - now() >= LONG_MS) { candidates[id] = true; left++; longest = Math.max(longest, t.due - now()); }
     }
-    if (limit === 0 && !playing(document) && !hasContent()) return 'idle';
-    // 이 후원이 끝나는 타이머는 지금 걸려 있는 것 중에 있다. 그것들이 다 지나면 더 감지 않는다
-    // (다음 후원이 새로 건 타이머까지 감아 버리지 않게). 긴 타이머가 없으면 (1초마다 세는 식) 바뀔 때까지 감는다.
-    var budget = Math.min(limit > 0 ? limit + STEP_MS : MAX_BLIND_MS, MAX_MS);
-    var state = { videoId: null, advanced: 0, waited: 0, waiting: !!(hideIt && waitOnly), result: null };
+    if (left === 0 && !playing(document) && !hasContent()) return 'idle';
+
+    var state = {
+      wound: 0, // 감은 페이지 시간
+      limit: Math.min(Math.max(MAX_WIND_MS, longest + STEP_MS), MAX_WAIT_MS),
+      since: 0, // 끝나는 때일 수 있는 타이머가 마지막으로 돈 뒤에 감은 시간
+      mediaTried: false,
+      waited: 0, waiting: !!(hideIt && waitOnly), result: null,
+    };
     skipping = state;
-    newVideos = 0;
+    remember();
     if (hideIt) hide();
+    mutated = false;
+    try {
+      observer = new MutationObserver(function () { mutated = true; });
+      observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+    } catch (e) { observer = null; }
 
     function finish(result) {
       state.result = result;
       skipping = null;
+      if (observer) { observer.disconnect(); observer = null; }
       show();
+      base = null;
+      arm();
+    }
+
+    // 페이지의 시간을 조금 감는다. 타이머가 돌 때마다 살핀다. 돌려주는 값: 'ended' 이 후원이 끝났다,
+    // 'settle' 끝나는 때일 수 있는 타이머를 돌렸다 (플레이어의 알림을 기다려 본다), 'more' 더 감을 수 있다, 'done' 다 감았다.
+    function wind() {
+      var from = now();
+      var until = Math.min(from + STEP_MS, from + (state.limit - state.wound));
+      var fires = 0;
+      var outcome = null;
+      advancing = true;
+      try {
+        while (outcome === null) {
+          var t = earliest(until);
+          if (!t) {
+            if (until > now()) offset += until - now();
+            outcome = 'more';
+            break;
+          }
+          if (t.due > now()) offset += t.due - now();
+          var candidate = candidates[t.id] === true;
+          if (candidate) { delete candidates[t.id]; left--; state.since = -(now() - from); }
+          fire(t);
+          fires++;
+          if (touched() && ended()) outcome = 'ended';
+          else if (candidate) outcome = 'settle';
+          else if (fires >= STEP_FIRES) outcome = 'more';
+        }
+      } finally {
+        advancing = false;
+      }
+      state.wound += now() - from;
+      state.since += now() - from;
+      if (outcome === 'more' && state.wound >= state.limit) outcome = 'done';
+      arm();
+      return outcome;
     }
 
     function step() {
-      if (newVideos > 0) return finish('changed');
+      var players = playerState();
+      if (players === 'changed' || ended()) return finish('changed');
+      if (players === 'unsure') { nativeSetTimeout(step, STEP_REAL_MS); return; } // 다음 후원일 수 있다: 더 감지 않고 기다린다
       if (!state.waiting) {
-        if (signature() !== start) return finish('changed');
-        if (state.advanced < budget) {
-          var ms = Math.min(STEP_MS, budget - state.advanced);
-          advance(ms);
-          state.advanced += ms;
+        var outcome = wind();
+        if (outcome === 'ended') return finish('changed');
+        if (outcome === 'settle') { nativeSetTimeout(step, SETTLE_REAL_MS); return; }
+        if (outcome === 'more') {
+          // 끝나는 때일 수 있는 타이머가 다 지났는데도 그대로다: 시간이 아니라 재생이 끝나야 넘어가는 위젯일 수 있다.
+          // 이 후원의 영상·소리를 끝으로 넘겨 보고 계속 감는다.
+          if (!state.mediaTried && left === 0 && state.since >= MEDIA_AFTER_MS) {
+            state.mediaTried = true;
+            endOwnMedia();
+            nativeSetTimeout(step, SETTLE_REAL_MS);
+            return;
+          }
           nativeSetTimeout(step, STEP_REAL_MS);
           return;
         }
-        // 시간을 다 감았는데도 같은 것이 나오고 있다.
-        if (contents() !== startContents) return finish('changed');
-        try { if (window.__camneuronSkipMedia) window.__camneuronSkipMedia(); } catch (e) {}
+        // 다 감았는데도 같은 후원이 나오고 있다.
+        if (!state.mediaTried) { state.mediaTried = true; endOwnMedia(); }
         if (!hideIt) return finish('limit');
         state.waiting = true;
-      } else {
-        if (contents() !== startContents) return finish('changed');
-        state.waited += WAIT_STEP_MS;
-        if (state.waited >= MAX_WAIT_MS) return finish('timeout');
-        try { muteIn(document); } catch (e) {} // 되풀이하려고 새로 만든 것도 소리를 끈다
+        nativeSetTimeout(step, SETTLE_REAL_MS);
+        return;
       }
+      state.waited += WAIT_STEP_MS;
+      if (state.waited >= MAX_WAIT_MS) return finish('timeout');
+      try { muteIn(document); } catch (e) {} // 되풀이하려고 새로 만든 것도 소리를 끈다
       nativeSetTimeout(step, WAIT_STEP_MS);
     }
     step();
