@@ -35,7 +35,8 @@ import java.util.concurrent.CopyOnWriteArraySet
 
 /**
  * 치지직 채팅창·후원 알림·브라우저 소스(투네이션 후원·영상 후원 등) 웹 위젯을 화면 밖에서 띄우고, 바뀔 때마다
- * 그림(Bitmap)으로 떠서 알린다.
+ * 그림(Bitmap)으로 떠서 알린다. 글자 소스([TextSources])도 같은 길로 알린다: 웹 페이지 없이 [TextRenderer]가 바로
+ * 그리고, 문구나 칸 크기가 바뀔 때만 다시 그린다. 가상 화면을 만들지 못한 폰에서도 글자 소스는 나온다.
  *
  * 위젯은 앱만 쓰는 가상 화면(VirtualDisplay) 위의 [Presentation] 창에 둔다. 액티비티 창이 아니라서 앱을 내려도,
  * 화면을 꺼도 방송 중에는 계속 돈다. 권한도 필요 없다 (앱이 만든 비공개 가상 화면).
@@ -57,11 +58,12 @@ import java.util.concurrent.CopyOnWriteArraySet
  * 모든 함수와 리스너는 메인 스레드에서 돈다.
  */
 object WidgetHost {
-    /** [index] 0 = 채팅창, 1 = 후원 알림, 2부터 브라우저 소스 ([BrowserSources]). */
+    /** [index] 0 = 채팅창, 1 = 후원 알림, 2부터 브라우저 소스 ([BrowserSources]), 그 뒤로 글자 소스 ([TextSources]). */
     const val CHAT = 0
     const val ALERT = 1
     const val FIRST_SOURCE = 2
-    const val COUNT = FIRST_SOURCE + BrowserSources.MAX
+    const val FIRST_TEXT = FIRST_SOURCE + BrowserSources.MAX
+    const val COUNT = FIRST_TEXT + TextSources.MAX
 
     class Frame(val bitmap: Bitmap, val item: OverlayItem)
 
@@ -225,9 +227,9 @@ object WidgetHost {
             root = content
             Log.i(TAG, "widget display ready")
         } catch (e: Exception) {
+            // 웹 위젯은 못 띄운다. 글자 소스는 가상 화면이 필요 없으므로 계속한다.
             Log.w(TAG, "widget display unavailable", e)
-            stop()
-            return
+            releaseDisplay()
         }
         OverlayStore.addListener(settingsListener)
         applySettings(OverlayStore.current)
@@ -243,6 +245,11 @@ object WidgetHost {
                 listeners.forEach { it.onWidgetFrame(i, null) }
             }
         }
+        releaseDisplay()
+        context = null
+    }
+
+    private fun releaseDisplay() {
         root = null
         runCatching { presentation?.dismiss() }
         presentation = null
@@ -252,12 +259,17 @@ object WidgetHost {
         reader = null
         readerThread?.quitSafely()
         readerThread = null
-        context = null
     }
 
     private fun applySettings(settings: OverlaySettings) {
-        val content = root ?: return
+        if (users == 0) return // 닫은 뒤에 늦게 온 알림
+        val content = root
         BrowserSources.slots(settings).forEachIndexed { index, item ->
+            if (index >= FIRST_TEXT) {
+                applyText(index, item)
+                return@forEachIndexed
+            }
+            if (content == null) return@forEachIndexed
             var slot = slots[index]
             if (item == null || !item.active) {
                 if (slot != null) {
@@ -277,6 +289,23 @@ object WidgetHost {
                 slots[index] = slot
             }
             slot.bind(item)
+        }
+    }
+
+    /** 글자 소스 한 칸. 문구·색·칸 크기가 그대로면 (자리만 옮겼으면) 그려 둔 그림을 다시 쓴다. */
+    private fun applyText(index: Int, item: OverlayItem?) {
+        val previous = latest[index]
+        if (item != null && previous != null && previous.item == item) return
+        val bitmap = when {
+            item == null || !item.active -> null
+            previous != null && TextRenderer.sameLook(previous.item, item) -> previous.bitmap
+            else -> runCatching { TextRenderer.render(item) }.onFailure { Log.w(TAG, "text $index not drawn", it) }.getOrNull()
+        }
+        if (bitmap != null && item != null) {
+            deliver(index, bitmap, item)
+        } else if (previous != null) {
+            latest[index] = null
+            listeners.forEach { it.onWidgetFrame(index, null) }
         }
     }
 

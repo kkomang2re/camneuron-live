@@ -15,9 +15,11 @@ import com.camneuron.core.overlay.OverlaySettings
  * - 영상 후원: 오른쪽 가운데의 16:9 칸. 영상이 도는 동안 후원 알림을 가리지 않게 알림 아래, 아래쪽 칸 위에 둔다.
  *   내용은 줄이지 않는다.
  * - 그 밖(목표 막대 등): 아래쪽, 채팅 칸을 피해 오른쪽부터 차례로.
+ * - 글자 소스("룰렛 있음" 같은 문구): 위쪽 양 모서리. 새로 넣을 때만 여기에 놓고, 그 뒤로는 사람이 놓은 자리와 크기를
+ *   그대로 둔다 ("자동 배치"도 건드리지 않는다: 칸 크기가 곧 글자 크기라서).
  */
 object WidgetLayout {
-    enum class Kind { CHAT, ALERT, VIDEO, OTHER }
+    enum class Kind { CHAT, ALERT, VIDEO, OTHER, TEXT }
 
     /** 위젯 하나의 자리와 내용 배율. */
     data class Spot(val x: Float, val y: Float, val w: Float, val h: Float, val zoom: Float = 1f)
@@ -31,6 +33,13 @@ object WidgetLayout {
         Spot(x = 0.28f, y = 0.80f, w = 0.34f, h = 0.17f),
         Spot(x = 0.64f, y = 0.62f, w = 0.34f, h = 0.17f),
         Spot(x = 0.28f, y = 0.62f, w = 0.34f, h = 0.17f),
+    )
+
+    /** 새 글자 소스의 자리: 왼쪽 위, 오른쪽 위, 왼쪽 위의 아래. */
+    val TEXTS = listOf(
+        Spot(x = 0.02f, y = 0.04f, w = 0.24f, h = 0.10f),
+        Spot(x = 0.74f, y = 0.04f, w = 0.24f, h = 0.10f),
+        Spot(x = 0.02f, y = 0.16f, w = 0.24f, h = 0.10f),
     )
 
     /** "영상 후원"에는 "후원"도 들어 있으므로 영상인지를 먼저 본다. */
@@ -52,6 +61,7 @@ object WidgetLayout {
     fun kind(index: Int, item: OverlayItem): Kind = when (index) {
         WidgetHost.CHAT -> Kind.CHAT
         WidgetHost.ALERT -> Kind.ALERT
+        in WidgetHost.FIRST_TEXT until WidgetHost.COUNT -> Kind.TEXT
         else -> guess(item.name) ?: guess(item.url) ?: Kind.OTHER
     }
 
@@ -65,7 +75,7 @@ object WidgetLayout {
         }
     }
 
-    /** 주소가 있는 칸마다의 알맞은 자리 (칸 번호 → 자리). 같은 종류는 칸 번호 순서로 자리를 받는다. */
+    /** 주소가 있는 칸마다의 알맞은 자리 (칸 번호 → 자리). 같은 종류는 칸 번호 순서로 자리를 받는다. 글자 소스는 빠진다. */
     fun spots(settings: OverlaySettings): Map<Int, Spot> {
         var chats = 0
         var others = 0
@@ -77,6 +87,7 @@ object WidgetLayout {
                 Kind.ALERT -> ALERT
                 Kind.VIDEO -> VIDEO
                 Kind.OTHER -> OTHERS[others++ % OTHERS.size]
+                Kind.TEXT -> return@forEachIndexed
             }
         }
         return result

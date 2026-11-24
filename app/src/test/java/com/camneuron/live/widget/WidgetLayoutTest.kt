@@ -71,6 +71,35 @@ class WidgetLayoutTest {
     }
 
     @Test
+    fun textSourcesStayWhereThePersonPutThem() {
+        val roulette = OverlaySettings.DEFAULT_TEXT.copy(text = "룰렛 있음", x = 0.4f, y = 0.7f, w = 0.5f, h = 0.2f)
+        val settings = OverlaySettings(chat = chzzkChat.copy(x = 0.7f), texts = listOf(roulette))
+        assertEquals(Kind.TEXT, WidgetLayout.kind(WidgetHost.FIRST_TEXT, roulette))
+        assertFalse(WidgetLayout.isDonation(Kind.TEXT))
+        // 자동 배치는 웹 위젯만 옮긴다: 글자는 칸 크기가 곧 글자 크기다.
+        val out = WidgetLayout.arrange(settings)
+        assertEquals(WidgetLayout.CHAT, out.chat.spot())
+        assertEquals(listOf(roulette), out.texts)
+        assertEquals(setOf(WidgetHost.CHAT), WidgetLayout.spots(settings).keys)
+        // 방송 설정을 저장해도 그대로.
+        assertEquals(listOf(roulette), WidgetLayout.placeNew(OverlaySettings(), settings, emptySet()).texts)
+    }
+
+    @Test
+    fun textSpotsAreInsideTheVideoAndClearOfTheOtherSpots() {
+        val others = listOf(WidgetLayout.CHAT, WidgetLayout.CHAT_SECOND, WidgetLayout.ALERT, WidgetLayout.VIDEO) + WidgetLayout.OTHERS
+        fun overlap(a: WidgetLayout.Spot, b: WidgetLayout.Spot) =
+            a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+        assertEquals(TextSources.MAX, WidgetLayout.TEXTS.size)
+        for ((i, s) in WidgetLayout.TEXTS.withIndex()) {
+            assertTrue(s.x >= 0f && s.y >= 0f && s.x + s.w <= 1f && s.y + s.h <= 1f)
+            assertTrue(others.none { overlap(s, it) })
+            assertTrue(WidgetLayout.TEXTS.drop(i + 1).none { overlap(s, it) })
+        }
+        assertEquals(WidgetLayout.TEXTS[0], OverlaySettings.DEFAULT_TEXT.spot())
+    }
+
+    @Test
     fun leavesEmptyWidgetsAlone() {
         val settings = OverlaySettings(chat = chzzkChat)
         val out = WidgetLayout.arrange(settings)

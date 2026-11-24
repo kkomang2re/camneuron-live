@@ -23,6 +23,8 @@ import kotlin.math.roundToInt
  * [editable]이면 위쪽 막대를 끌어 옮기고 오른쪽 아래 모서리를 끌어 크기(창 크기)를 바꾼다. 손을 떼면 [onMoved]로 0~1 좌표를 알린다.
  * 막대의 −·+는 창 안 내용의 배율(CSS zoom)을 바꿔 [onZoom]으로 알린다. 투네이션 알림처럼 크기가 정해진 페이지를
  * 줄이려면 창을 줄이고 배율도 낮춘다 (창만 줄이면 내용이 잘린다).
+ * 글자 소스의 틀은 배율 버튼 대신 [editLabel] 버튼을 두고, 누르면 [onEdit]으로 알린다 (문구를 고친다). 글자는 칸에 꽉 차게
+ * 그려지므로 모서리를 끌면 글자 크기가 바뀐다.
  * 편집 중이 아니면 터치를 받지 않아 아래 미리보기(초점·줌)가 그대로 동작한다.
  */
 @SuppressLint("ViewConstructor", "ClickableViewAccessibility")
@@ -31,6 +33,8 @@ class WidgetFrame(
     private var title: String,
     private val onMoved: (x: Float, y: Float, w: Float, h: Float) -> Unit,
     private val onZoom: (zoom: Float) -> Unit,
+    private val onEdit: (() -> Unit)? = null,
+    editLabel: String = "",
 ) : FrameLayout(context) {
     private val image = ImageView(context).apply { scaleType = ImageView.ScaleType.FIT_XY }
     private val label = barText().apply {
@@ -41,13 +45,25 @@ class WidgetFrame(
     private val zoomLabel = barText().apply { gravity = Gravity.CENTER }
     private val zoomOut = barButton("−", -1)
     private val zoomIn = barButton("+", +1)
+    private val editButton = barText().apply {
+        text = editLabel
+        gravity = Gravity.CENTER
+        setPadding(dp(10), 0, dp(10), 0)
+        setBackgroundColor(0x55FFFFFF)
+        isClickable = true
+        setOnClickListener { if (editable) onEdit?.invoke() }
+    }
     private val bar = LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL
         setBackgroundColor(0xAA000000.toInt())
         addView(label, LinearLayout.LayoutParams(0, LayoutParams.MATCH_PARENT, 1f))
-        addView(zoomOut, LinearLayout.LayoutParams(dp(BAR_DP + 6), LayoutParams.MATCH_PARENT))
-        addView(zoomLabel, LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.MATCH_PARENT))
-        addView(zoomIn, LinearLayout.LayoutParams(dp(BAR_DP + 6), LayoutParams.MATCH_PARENT))
+        if (onEdit != null) {
+            addView(editButton, LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.MATCH_PARENT))
+        } else {
+            addView(zoomOut, LinearLayout.LayoutParams(dp(BAR_DP + 6), LayoutParams.MATCH_PARENT))
+            addView(zoomLabel, LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.MATCH_PARENT))
+            addView(zoomIn, LinearLayout.LayoutParams(dp(BAR_DP + 6), LayoutParams.MATCH_PARENT))
+        }
     }
     private val resizeHandle = View(context).apply { setBackgroundResource(com.camneuron.core.R.drawable.resize_handle) }
     private val border = View(context).apply { setBackgroundResource(com.camneuron.core.R.drawable.overlay_border) }

@@ -12,6 +12,7 @@ import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.SurfaceTexture
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.hardware.display.DisplayManager
 import android.text.SpannableStringBuilder
 import android.text.Spanned
@@ -72,6 +73,7 @@ import com.camneuron.live.chzzk.ChzzkTags
 import com.camneuron.live.chzzk.LoginActivity
 import com.camneuron.live.rtmp.RtmpUrl
 import com.camneuron.live.widget.BrowserSources
+import com.camneuron.live.widget.TextSources
 import com.camneuron.live.widget.WidgetCanvas
 import com.camneuron.live.widget.WidgetLayout
 import com.camneuron.live.widget.WidgetFrame
@@ -1015,6 +1017,9 @@ class MainActivity : Activity() {
                     OverlayStore.update { BrowserSources.update(it, index) { item -> item.copy(zoom = zoom) } }
                     setBeforeAutoLayout(null)
                 },
+                // 글자 소스의 틀에는 배율 대신 "수정" 버튼이 붙는다.
+                onEdit = if (index >= WidgetHost.FIRST_TEXT) ({ editTextSource(index - WidgetHost.FIRST_TEXT) }) else null,
+                editLabel = getString(R.string.btn_text_change),
             )
         }
         widgetFrames.forEach { widgetLayer.addView(it) }
@@ -1051,6 +1056,13 @@ class MainActivity : Activity() {
             if (saveSettings()) setEditingWidgets(true)
         }
         findViewById<View>(R.id.btn_widget_done).setOnClickListener { setEditingWidgets(false) }
+        findViewById<View>(R.id.btn_widget_text).setOnClickListener { showTextSources() }
+        findViewById<View>(R.id.btn_text_sources).setOnClickListener {
+            if (saveSettings()) {
+                setEditingWidgets(true)
+                showTextSources()
+            }
+        }
         widgetAutoButton.setOnClickListener { autoLayoutWidgets() }
         findViewById<View>(R.id.btn_widget_skip).setOnClickListener {
             WidgetHost.skipDonation { widgets, started ->
@@ -1070,12 +1082,8 @@ class MainActivity : Activity() {
         // 방송 중에도 된다. 옮기거나 배율을 바꾸면 바로 저장되고, 방송 세션이 같은 설정을 보고 송출 화면에도 바로 반영한다.
         widgetsButton.setOnClickListener {
             showMore(false)
-            when {
-                editingWidgets -> setEditingWidgets(false)
-                BrowserSources.slots(OverlayStore.current).none { it?.active == true } ->
-                    Toast.makeText(this, R.string.toast_no_widgets, Toast.LENGTH_LONG).show()
-                else -> setEditingWidgets(true)
-            }
+            // 켜 둔 것이 없어도 연다: 거기서 "글자"로 문구를 넣는다.
+            setEditingWidgets(!editingWidgets)
         }
     }
 
@@ -1123,7 +1131,8 @@ class MainActivity : Activity() {
             chatButton.isActivated = false
             adjustButton.isActivated = false
             showMore(false)
-            Toast.makeText(this, R.string.toast_widget_edit, Toast.LENGTH_LONG).show()
+            val empty = BrowserSources.slots(OverlayStore.current).none { it?.active == true }
+            Toast.makeText(this, if (empty) R.string.toast_no_widgets else R.string.toast_widget_edit, Toast.LENGTH_LONG).show()
         }
         render(LiveState.current)
     }
@@ -1141,8 +1150,122 @@ class MainActivity : Activity() {
     private fun widgetTitle(index: Int, item: OverlayItem?): String = when (index) {
         WidgetHost.CHAT -> getString(R.string.widget_chat)
         WidgetHost.ALERT -> getString(R.string.widget_alert)
+        in WidgetHost.FIRST_TEXT until WidgetHost.COUNT -> item?.text?.let { TextSources.label(it) }?.takeIf { it.isNotEmpty() }
+            ?: getString(R.string.text_source_name, index - WidgetHost.FIRST_TEXT + 1)
         else -> item?.name?.takeIf { it.isNotBlank() }
             ?: getString(R.string.source_default_name, index - WidgetHost.FIRST_SOURCE + 1)
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // 글자 소스 ("룰렛 있음" 같은 문구를 방송 화면에 넣는다). 방송 중에도 넣고 고칠 수 있다.
+
+    /** "글자": 넣어 둔 것이 없으면 바로 새로 넣고, 있으면 고칠 것을 고른다. */
+    private fun showTextSources() {
+        val texts = OverlayStore.current.texts
+        if (texts.isEmpty()) {
+            editTextSource(-1)
+            return
+        }
+        val labels = texts.map { item ->
+            val streamed = getString(if (WidgetCanvas.streamed(item)) R.string.widget_streamed else R.string.widget_phone_only)
+            getString(R.string.text_list_item, TextSources.label(item.text), streamed)
+        }.toMutableList()
+        if (texts.size < TextSources.MAX) labels += getString(R.string.text_add)
+        android.app.AlertDialog.Builder(this)
+            .setTitle(getString(R.string.text_dialog_title, TextSources.MAX))
+            .setItems(labels.toTypedArray()) { _, which -> editTextSource(if (which < texts.size) which else -1) }
+            .setNegativeButton(R.string.btn_cancel, null)
+            .show()
+    }
+
+    /** 글자 소스 하나를 고친다. [position]에 없으면 (-1) 새로 넣는다. 저장하면 방송 화면에 바로 반영된다. */
+    private fun editTextSource(position: Int) {
+        val base = OverlayStore.current.texts.getOrNull(position)
+        val view = layoutInflater.inflate(R.layout.dialog_text, null)
+        val input = view.findViewById<EditText>(R.id.input_text)
+        val colorRow = view.findViewById<LinearLayout>(R.id.text_colors)
+        val backgroundChip = view.findViewById<TextView>(R.id.chip_text_background)
+        val streamChip = view.findViewById<TextView>(R.id.chip_text_stream)
+        input.setText(base?.text.orEmpty())
+        input.setSelection(input.text.length)
+        var color = base?.textColor ?: TextSources.COLORS.first()
+        val colorChips = TextSources.COLORS.mapIndexed { i, value ->
+            (layoutInflater.inflate(R.layout.chip, colorRow, false) as TextView).also { chip ->
+                chip.setText(TEXT_COLOR_NAMES[i])
+                val dot = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(value)
+                    setStroke(dp(1), 0xFF000000.toInt())
+                    setBounds(0, 0, dp(14), dp(14))
+                }
+                chip.setCompoundDrawablesRelative(dot, null, null, null)
+                chip.compoundDrawablePadding = dp(6)
+                colorRow.addView(chip)
+            }
+        }
+        fun renderColors() = colorChips.forEachIndexed { i, chip -> chip.isActivated = TextSources.COLORS[i] == color }
+        colorChips.forEachIndexed { i, chip ->
+            chip.setOnClickListener {
+                color = TextSources.COLORS[i]
+                renderColors()
+            }
+        }
+        renderColors()
+        backgroundChip.isActivated = base?.textBackground ?: false
+        backgroundChip.setOnClickListener { it.isActivated = !it.isActivated }
+        streamChip.isActivated = base?.stream ?: true
+        streamChip.setOnClickListener { it.isActivated = !it.isActivated }
+
+        val builder = android.app.AlertDialog.Builder(this)
+            .setTitle(if (base == null) R.string.text_dialog_new else R.string.text_dialog_edit)
+            .setView(view)
+            .setPositiveButton(R.string.btn_save, null) // 아래에서 맡는다: 문구가 비었으면 닫지 않는다
+            .setNegativeButton(R.string.btn_cancel, null)
+        if (base != null) {
+            builder.setNeutralButton(R.string.btn_source_remove) { _, _ ->
+                OverlayStore.update { s ->
+                    if (s.texts.getOrNull(position) == base) s.copy(texts = s.texts.filterIndexed { i, _ -> i != position }) else s
+                }
+            }
+        }
+        val dialog = builder.create()
+        dialog.setOnShowListener {
+            dialog.getButton(android.content.DialogInterface.BUTTON_POSITIVE).setOnClickListener {
+                val text = TextSources.clean(input.text.toString())
+                if (text.isEmpty()) {
+                    input.error = getString(R.string.error_text_empty)
+                    return@setOnClickListener
+                }
+                val background = backgroundChip.isActivated
+                val stream = streamChip.isActivated
+                var added = false
+                OverlayStore.update { s ->
+                    when {
+                        base == null && s.texts.size < TextSources.MAX -> {
+                            added = true
+                            s.copy(texts = s.texts + TextSources.create(s.texts, text, color, background, stream))
+                        }
+                        base != null && s.texts.getOrNull(position) == base -> s.copy(
+                            texts = s.texts.toMutableList().also {
+                                it[position] = base.copy(text = text, textColor = color, textBackground = background, stream = stream)
+                            },
+                        )
+                        else -> s
+                    }
+                }
+                dialog.dismiss()
+                if (added) {
+                    // 새로 넣은 것은 바로 옮기고 크기를 바꿀 수 있게 조정 상태로 둔다.
+                    if (!editingWidgets) setEditingWidgets(true)
+                    Toast.makeText(this, R.string.toast_text_added, Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+        if (base == null) {
+            input.requestFocus()
+            dialog.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
+        }
+        dialog.show()
     }
 
     /** 설정 화면을 열 때 저장된 브라우저 소스로 줄을 다시 만든다. */
@@ -2025,6 +2148,12 @@ class MainActivity : Activity() {
 
         /** 비어 있는 위젯 칸 (안 보인다). */
         private val EMPTY_WIDGET = OverlayItem(x = 0f, y = 0f, w = 0f, h = 0f)
+
+        /** 글자 색의 이름 ([TextSources.COLORS]와 같은 순서). */
+        private val TEXT_COLOR_NAMES = listOf(
+            R.string.text_color_white, R.string.text_color_yellow, R.string.text_color_pink,
+            R.string.text_color_sky, R.string.text_color_green,
+        )
 
         /** 캠뉴런과 같은 뷰티 보정 단계 (0~100). */
         val BEAUTY_LEVELS = listOf(

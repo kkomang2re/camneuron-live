@@ -588,7 +588,8 @@ class VideoEffects(
             }
         """
 
-        const val MAX_LAYERS = 8
+        /** 영상 위에 얹는 그림 층 수: 웹 위젯 6칸과 글자 소스 3칸, 그리고 여유. */
+        const val MAX_LAYERS = 12
 
         /** 알파를 미리 곱한 그림을 [uAlpha]만큼 투명하게. */
         private const val FRAGMENT_LAYER = PRECISION + """

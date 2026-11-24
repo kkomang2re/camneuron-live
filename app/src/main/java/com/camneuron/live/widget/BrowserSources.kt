@@ -5,8 +5,9 @@ import com.camneuron.core.overlay.OverlaySettings
 import kotlin.math.roundToInt
 
 /**
- * 위젯 칸 번호와 브라우저 소스 계산. 칸은 [WidgetHost.CHAT], [WidgetHost.ALERT], 그 뒤로 브라우저 소스가 [MAX]개까지.
- * 칸 번호가 곧 인코더의 그림 층 번호라서, 뒤 칸일수록 위에 그려진다.
+ * 위젯 칸 번호와 브라우저 소스 계산. 칸은 [WidgetHost.CHAT], [WidgetHost.ALERT], 그 뒤로 브라우저 소스가 [MAX]개까지,
+ * 그리고 글자 소스([WidgetHost.FIRST_TEXT]부터 [TextSources.MAX]개까지).
+ * 칸 번호가 곧 인코더의 그림 층 번호라서, 뒤 칸일수록 위에 그려진다 (글자가 맨 위).
  */
 object BrowserSources {
     /** 위젯 하나마다 화면 밖 웹 페이지 하나와 초당 몇 번의 그림 뜨기가 든다. 폰 발열을 생각해 넉넉하지 않게. */
@@ -22,6 +23,7 @@ object BrowserSources {
             when (index) {
                 WidgetHost.CHAT -> settings.chat
                 WidgetHost.ALERT -> settings.alert
+                in WidgetHost.FIRST_TEXT until WidgetHost.COUNT -> settings.texts.getOrNull(index - WidgetHost.FIRST_TEXT)
                 else -> settings.sources.getOrNull(index - WidgetHost.FIRST_SOURCE)
             }
         }
@@ -31,6 +33,14 @@ object BrowserSources {
         when (index) {
             WidgetHost.CHAT -> settings.copy(chat = transform(settings.chat))
             WidgetHost.ALERT -> settings.copy(alert = transform(settings.alert))
+            in WidgetHost.FIRST_TEXT until WidgetHost.COUNT -> {
+                val i = index - WidgetHost.FIRST_TEXT
+                if (i !in settings.texts.indices) {
+                    settings
+                } else {
+                    settings.copy(texts = settings.texts.toMutableList().also { it[i] = transform(it[i]) })
+                }
+            }
             else -> {
                 val i = index - WidgetHost.FIRST_SOURCE
                 if (i !in settings.sources.indices) {
