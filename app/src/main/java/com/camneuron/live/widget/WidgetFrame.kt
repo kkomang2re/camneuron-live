@@ -111,7 +111,7 @@ class WidgetFrame(
     }
 
     private fun updateVisibility() {
-        val active = item?.active == true && imageRect.width() > 0f
+        val active = item?.on == true && imageRect.width() > 0f
         visibility = if (active && (editable || image.drawable != null)) View.VISIBLE else View.GONE
     }
 

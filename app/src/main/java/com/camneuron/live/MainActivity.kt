@@ -1057,6 +1057,7 @@ class MainActivity : Activity() {
         }
         findViewById<View>(R.id.btn_widget_done).setOnClickListener { setEditingWidgets(false) }
         findViewById<View>(R.id.btn_widget_text).setOnClickListener { showTextSources() }
+        findViewById<View>(R.id.btn_widget_switch).setOnClickListener { showWidgetSwitches() }
         findViewById<View>(R.id.btn_text_sources).setOnClickListener {
             if (saveSettings()) {
                 setEditingWidgets(true)
@@ -1131,8 +1132,13 @@ class MainActivity : Activity() {
             chatButton.isActivated = false
             adjustButton.isActivated = false
             showMore(false)
-            val empty = BrowserSources.slots(OverlayStore.current).none { it?.active == true }
-            Toast.makeText(this, if (empty) R.string.toast_no_widgets else R.string.toast_widget_edit, Toast.LENGTH_LONG).show()
+            val slots = BrowserSources.slots(OverlayStore.current)
+            val message = when {
+                slots.none { it?.active == true } -> R.string.toast_no_widgets
+                slots.none { it?.on == true } -> R.string.toast_widgets_all_off
+                else -> R.string.toast_widget_edit
+            }
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
         }
         render(LiveState.current)
     }
@@ -1156,6 +1162,32 @@ class MainActivity : Activity() {
             ?: getString(R.string.source_default_name, index - WidgetHost.FIRST_SOURCE + 1)
     }
 
+    /**
+     * "켜고 끄기": 넣어 둔 위젯과 글자를 하나씩 켜고 끈다. 누르는 즉시 저장되고 방송 화면에도 바로 반영된다 (방송 중에도).
+     * 끈 위젯은 페이지를 닫아 소리도 나지 않는다. 다시 켜면 페이지를 새로 부른다.
+     */
+    private fun showWidgetSwitches() {
+        val slots = BrowserSources.slots(OverlayStore.current)
+        val indices = slots.indices.filter { slots[it]?.active == true }
+        if (indices.isEmpty()) {
+            Toast.makeText(this, R.string.toast_no_widgets, Toast.LENGTH_LONG).show()
+            return
+        }
+        val labels = indices.map { index ->
+            val title = widgetTitle(index, slots[index])
+            if (index >= WidgetHost.FIRST_TEXT) getString(R.string.widget_switch_text, title) else title
+        }
+        val checked = BooleanArray(indices.size) { slots[indices[it]]?.visible == true }
+        android.app.AlertDialog.Builder(this)
+            .setTitle(R.string.widget_switch_title)
+            .setMultiChoiceItems(labels.toTypedArray(), checked) { _, which, isChecked ->
+                val index = indices[which]
+                OverlayStore.update { BrowserSources.update(it, index) { item -> item.copy(visible = isChecked) } }
+            }
+            .setPositiveButton(R.string.btn_cancel, null)
+            .show()
+    }
+
     // ---------------------------------------------------------------------------------------------
     // 글자 소스 ("룰렛 있음" 같은 문구를 방송 화면에 넣는다). 방송 중에도 넣고 고칠 수 있다.
 
@@ -1167,8 +1199,12 @@ class MainActivity : Activity() {
             return
         }
         val labels = texts.map { item ->
-            val streamed = getString(if (WidgetCanvas.streamed(item)) R.string.widget_streamed else R.string.widget_phone_only)
-            getString(R.string.text_list_item, TextSources.label(item.text), streamed)
+            val state = when {
+                !item.visible -> R.string.widget_off
+                item.stream -> R.string.widget_streamed
+                else -> R.string.widget_phone_only
+            }
+            getString(R.string.text_list_item, TextSources.label(item.text), getString(state))
         }.toMutableList()
         if (texts.size < TextSources.MAX) labels += getString(R.string.text_add)
         android.app.AlertDialog.Builder(this)
@@ -1810,12 +1846,14 @@ class MainActivity : Activity() {
             else -> {
                 // 새로 넣은 위젯은 캠 방송에 알맞은 자리에 저절로 놓는다 (사람이 옮겨 둔 것은 그대로).
                 val newSlots = rows.indices.filter { rows[it].base == null }.map { WidgetHost.FIRST_SOURCE + it }.toSet()
+                // 꺼 둔 위젯은 꺼 둔 채로 둔다. 주소를 바꿨으면 새로 넣은 것이므로 켠다.
                 val sources = rows.map { row ->
+                    val url = row.url.text.toString().trim()
                     (row.base ?: OverlaySettings.DEFAULT_SOURCE).copy(
                         name = row.name.text.toString().trim(),
-                        url = row.url.text.toString().trim(),
+                        url = url,
                         stream = row.stream,
-                        visible = true,
+                        visible = row.base?.let { it.visible || it.url != url } ?: true,
                     )
                 }
                 LivePrefs.save(this, server, key)
@@ -1823,8 +1861,10 @@ class MainActivity : Activity() {
                 saveChzzkApp()
                 OverlayStore.update { old ->
                     val next = old.copy(
-                        chat = old.chat.copy(url = chatUrl, stream = draftChatStream, visible = true),
-                        alert = old.alert.copy(url = alertUrl, stream = draftAlertStream, visible = true),
+                        chat = old.chat.copy(url = chatUrl, stream = draftChatStream, visible = old.chat.visible || old.chat.url != chatUrl),
+                        alert = old.alert.copy(
+                            url = alertUrl, stream = draftAlertStream, visible = old.alert.visible || old.alert.url != alertUrl,
+                        ),
                         sources = sources,
                     )
                     WidgetLayout.placeNew(old, next, newSlots)
@@ -2080,11 +2120,13 @@ class MainActivity : Activity() {
         val quality = LivePrefs.quality(this)
         prepQuality.value.text = getString(R.string.prep_quality, quality.label, quality.bitrateKbps / 1000f)
 
-        val widgets = BrowserSources.slots(OverlayStore.current).count { it?.active == true }
-        prepWidgets.value.text = if (widgets == 0) {
-            getString(R.string.prep_widgets_none)
-        } else {
-            getString(R.string.prep_widgets_count, widgets)
+        val slots = BrowserSources.slots(OverlayStore.current)
+        val widgetsOn = slots.count { it?.on == true }
+        val widgetsOff = slots.count { it?.active == true } - widgetsOn
+        prepWidgets.value.text = when {
+            widgetsOff > 0 -> getString(R.string.prep_widgets_count_off, widgetsOn, widgetsOff)
+            widgetsOn == 0 -> getString(R.string.prep_widgets_none)
+            else -> getString(R.string.prep_widgets_count, widgetsOn)
         }
 
         prepCheck.value.text = when {

@@ -1,6 +1,5 @@
 package sim
 
-import com.camneuron.core.net.NetGovernor
 import com.camneuron.live.LiveNet
 import com.camneuron.live.rtmp.Amf0
 import com.camneuron.live.rtmp.ChunkReader
@@ -25,11 +24,11 @@ import java.util.concurrent.locks.LockSupport
 /*
  * 방송 지연 측정: 앱의 실제 송출 코드를 가짜 RTMP 서버에 연결하고, 그 사이에 속도가 바뀌는 망을 둔다.
  * 프레임마다 찍은 시각을 넣어 보내고 서버에 닿은 시각과 비교한다 (폰 안에서 밀린 시간 + 망).
- * 카메라·인코더·치지직 서버·시청자 플레이어는 들어 있지 않다. 방송 세션(LiveSession)이 송출 코드를 엮는 방식을
- * 그대로 따르므로, 그쪽을 바꾸면 여기도 맞춘다.
+ * 카메라·인코더·치지직 서버는 들어 있지 않고, 시청자 플레이어는 단순한 모형이다 ([Viewer]). 방송 세션(LiveSession)이
+ * 송출 코드를 엮는 방식을 그대로 따르므로, 그쪽을 바꾸면 여기도 맞춘다.
  *
  * 결과(1초마다 한 줄): 망 속도, 목표 비트레이트, 네트워크 단계, 버린 프레임, 대기열에서 밀린 시간,
- * 서버에 닿은 영상·소리가 가장 늦었던 시간, 건너뛴 영상 길이, 시청자 지연(모형, [Viewer]).
+ * 서버에 닿은 영상·소리가 가장 늦었던 시간, 건너뛴 영상 길이, 시청자 지연과 화면이 멈춘 횟수(모형), 건너뛴 시간.
  */
 
 // 앱의 기본 방송: 1080p30 4.5 Mbps, 키프레임 2초, AAC 160 kbps
@@ -39,8 +38,12 @@ const val KEY_FRAME_S = 2
 const val AUDIO_BPS = 160_000
 const val STALL_MS = 10_000L
 
-/** 폰과 서버 사이의 망이 품을 수 있는 양 (중계기의 수신 버퍼로 흉내 낸다). */
-const val LINK_BUFFER = 32 * 1024
+/**
+ * 중계기(망)의 수신 버퍼. 작게 둔다: 실제 망에서는 서버가 받기 전의 것은 보낸 쪽 소켓 버퍼에 남아 있는 것으로 치므로,
+ * 망이 따로 품는 양은 거의 없다. 크게 두면 (전에는 32KB) 이 PC의 내부 연결이 그 절반씩 덩어리로 넘겨, 보내는 쪽에서
+ * 재는 망 속도가 실제보다 훨씬 들쭉날쭉해진다.
+ */
+const val LINK_BUFFER = 4 * 1024
 
 /** 시간에 따른 망 속도: (초, kbit/s). */
 val SCENARIOS: Map<String, List<Pair<Int, Int>>> = mapOf(
@@ -90,52 +93,91 @@ class Link(private val schedule: List<Pair<Int, Int>>) {
  * 시청자 플레이어 모형: 따라잡지 않는 플레이어 (치지직 모바일 앱에서 지연이 늘어난 채 돌아오지 않는 것을 흉내 낸다).
  *
  * 서버에 닿은 것을 방송 시각(RTMP 타임스탬프) 순서대로 1배속으로 튼다. 처음에는 [START_BUFFER_MS]만큼 모은 뒤 틀기 시작하고,
- * 받아 둔 것이 떨어지면 멈췄다가 새로 오면 그 자리에서 이어 튼다 (건너뛰거나 빨리 감지 않는다). 서버·CDN을 거치는 시간은
- * [PIPELINE_MS]로 고정했다. 지연 = 지금 − 지금 보이는 장면을 찍은 시각. 망이 좋을 때는 5초다.
+ * 받아 둔 것이 떨어지면 멈췄다가 [REBUFFER_MS]만큼 다시 모이면 그 자리에서 이어 튼다 (건너뛰거나 빨리 감지 않는다).
+ * 서버·CDN을 거치는 시간은 [PIPELINE_MS]로 고정했다. 지연 = 지금 − 지금 보이는 장면을 찍은 시각. 망이 좋을 때는 5초다.
  *
- * 폰이 늦게 보낸 만큼 방송 시각이 한꺼번에 몰려 닿으면 플레이어에 그만큼 쌓여 지연이 늘어난다. 폰이 밀린 것을 버리고
- * 방송 시각을 이어 붙이면 몰려 닿는 것이 없어 늘어나지 않는다. 실제 플레이어·서버가 이대로 움직이는지는 확인하지 못했다.
+ * **영상과 소리가 둘 다 닿은 데까지만 틀 수 있다.** 서버는 영상과 소리를 한 조각(세그먼트)으로 묶어 내보내고 조각은 영상
+ * 프레임이 있어야 끝나므로, 영상 없이 소리만 닿는 동안에는 시청자에게 아무것도 나가지 않다가 영상이 다시 닿는 순간 그동안의
+ * 소리까지 한꺼번에 나간다. 그래서 폰이 소리만 보내며 영상을 쉰 시간은 고스란히 시청자 지연이 된다.
+ * (처음 모형은 소리만 닿아도 트는 것으로 보아 이것을 놓쳤다: 영상을 20초까지 쉬던 0.0.11~0.0.13에서 실제 지연이 28초까지 갔다.)
+ *
+ * 폰이 늦게 보낸 만큼 방송 시각이 한꺼번에 몰려 닿으면 플레이어에 그만큼 쌓여 지연이 늘어난다. 폰이 밀린 것을 영상·소리 함께
+ * 버리고 방송 시각을 이어 붙이면 몰려 닿는 것이 없어 늘어나지 않는다. 실제 플레이어·서버가 이대로 움직이는지는 확인하지 못했다.
  */
 class Viewer {
-    private val pending = ArrayDeque<LongArray>() // 받았지만 아직 틀지 않은 것: (방송 시각 ms, 찍은 시각 ns)
-    private var edgeMs = -1L
+    // 받았지만 아직 틀지 않은 것: (방송 시각 ms, 찍은 시각 ns)
+    private val pendingVideo = ArrayDeque<LongArray>()
+    private val pendingAudio = ArrayDeque<LongArray>()
+    private var videoEdgeMs = -1L
+    private var audioEdgeMs = -1L
     private var playheadMs = 0.0
     private var lastNs = 0L
     private var startNs = 0L
     private var shownCaptureNs = 0L
+    private var started = false
+    private var stalled = false
+
+    /** 멈춘 횟수 (받아 둔 것이 떨어진 횟수). */
+    var stalls = 0
+        private set
 
     @Synchronized
-    fun arrive(mediaMs: Long, captureNs: Long, nowNs: Long) {
+    fun arrive(mediaMs: Long, captureNs: Long, nowNs: Long, video: Boolean) {
         advance(nowNs)
-        if (edgeMs < 0) {
+        if (!started) {
+            started = true
             startNs = nowNs + START_BUFFER_MS * 1_000_000
             playheadMs = mediaMs.toDouble()
             shownCaptureNs = captureNs
         }
-        edgeMs = maxOf(edgeMs, mediaMs)
-        pending.addLast(longArrayOf(mediaMs, captureNs))
+        if (video) {
+            videoEdgeMs = maxOf(videoEdgeMs, mediaMs)
+            pendingVideo.addLast(longArrayOf(mediaMs, captureNs))
+        } else {
+            audioEdgeMs = maxOf(audioEdgeMs, mediaMs)
+            pendingAudio.addLast(longArrayOf(mediaMs, captureNs))
+        }
+        advance(nowNs)
     }
 
     /** 지금의 시청자 지연 (ms). 아직 아무것도 못 받았으면 -1. */
     @Synchronized
     fun delayMs(nowNs: Long): Long {
-        if (edgeMs < 0) return -1
+        if (!started) return -1
         advance(nowNs)
         if (nowNs < startNs) return START_BUFFER_MS + PIPELINE_MS
         return (nowNs - shownCaptureNs) / 1_000_000 + PIPELINE_MS
     }
 
     private fun advance(nowNs: Long) {
-        if (edgeMs >= 0 && nowNs > startNs) {
-            val from = maxOf(lastNs, startNs)
-            playheadMs = minOf(playheadMs + (nowNs - from) / 1e6, edgeMs.toDouble())
-            while (pending.isNotEmpty() && pending.first()[0] <= playheadMs) shownCaptureNs = maxOf(shownCaptureNs, pending.removeFirst()[1])
+        val edge = minOf(videoEdgeMs, audioEdgeMs) // 둘 다 닿은 데까지
+        if (started && edge >= 0 && nowNs > startNs) {
+            if (stalled && edge - playheadMs >= REBUFFER_MS) {
+                stalled = false
+                lastNs = nowNs
+            }
+            if (!stalled) {
+                val target = playheadMs + (nowNs - maxOf(lastNs, startNs)) / 1e6
+                if (target >= edge) {
+                    playheadMs = maxOf(playheadMs, edge.toDouble())
+                    stalled = true
+                    stalls++
+                } else {
+                    playheadMs = target
+                }
+                for (pending in listOf(pendingVideo, pendingAudio)) {
+                    while (pending.isNotEmpty() && pending.first()[0] <= playheadMs) {
+                        shownCaptureNs = maxOf(shownCaptureNs, pending.removeFirst()[1])
+                    }
+                }
+            }
         }
         lastNs = nowNs
     }
 
     companion object {
         const val START_BUFFER_MS = 3_000L
+        const val REBUFFER_MS = 1_000L
         const val PIPELINE_MS = 2_000L
     }
 }
@@ -154,7 +196,7 @@ class Arrivals {
 
     @Synchronized
     fun video(captureNs: Long, nowNs: Long, mediaMs: Long) {
-        viewer.arrive(mediaMs, captureNs, nowNs)
+        viewer.arrive(mediaMs, captureNs, nowNs, video = true)
         val lag = (nowNs - captureNs) / 1_000_000
         videoFrames++
         videoLagMaxMs = maxOf(videoLagMaxMs, lag)
@@ -165,7 +207,7 @@ class Arrivals {
 
     @Synchronized
     fun audio(captureNs: Long, nowNs: Long, mediaMs: Long) {
-        viewer.arrive(mediaMs, captureNs, nowNs)
+        viewer.arrive(mediaMs, captureNs, nowNs, video = false)
         audioFrames++
         audioLagMaxMs = maxOf(audioLagMaxMs, (nowNs - captureNs) / 1_000_000)
     }
@@ -301,7 +343,8 @@ fun main(args: Array<String>) {
         }
     }, "link-up").apply { isDaemon = true; start() }
 
-    val publisher = RtmpPublisher(RtmpUrl("127.0.0.1", proxy.localPort, "live"), "key", RtmpPublisher.sendBufferFor(BITRATE))
+    var sendBufferBytes = RtmpPublisher.sendBufferFor(BITRATE + LiveNet.AUDIO_BPS)
+    val publisher = RtmpPublisher(RtmpUrl("127.0.0.1", proxy.localPort, "live"), "key", sendBufferBytes)
     publisher.connect()
 
     val keyRequested = AtomicBoolean(false)
@@ -313,7 +356,6 @@ fun main(args: Array<String>) {
         publisher,
         queueBytes = BITRATE / 8 * LiveNet.QUEUE_SECONDS,
         maxDelayMs = LiveNet.QUEUE_SECONDS * 1000L,
-        maxAudioDelayMs = LiveNet.AUDIO_QUEUE_SECONDS * 1000L,
         onNeedKeyFrame = { keyRequested.set(true) },
         onFailed = { failure[0] = it },
     )
@@ -362,32 +404,38 @@ fun main(args: Array<String>) {
 
     // LiveSession의 1초 틱: 네트워크 대응 → 인코더 비트레이트와 소켓 버퍼, 멈춤 확인.
     val net = LiveNet.governor()
-    val sendBuffer = LiveNet.SendBuffer()
-    var sendBufferBytes = 0
-    var lastBytesSent = streamer.bytesSent
-    val rows = StringBuilder("t,link_kbps,target_kbps,net_level,dropped_total,queue_delay_ms,video_frames,video_lag_max_ms,video_lag_avg_ms,audio_frames,audio_lag_max_ms,skipped_ms,viewer_delay_ms\n")
+    val debug = System.getenv("SIM_DEBUG") != null // 단계가 바뀌거나 건너뛸 때마다 한 줄씩 찍는다
+    val rows = StringBuilder("t,link_kbps,target_kbps,net_level,dropped_total,queue_delay_ms,video_frames,video_lag_max_ms,video_lag_avg_ms,audio_frames,audio_lag_max_ms,skipped_ms,viewer_delay_ms,viewer_stalls,skipped_total_ms\n")
     var stalledAt = -1
     var audioSkippedMs = 0L
     var next = link.startNs
     for (t in 1..link.totalSeconds) {
-        next += 1_000_000_000L
-        val wait = next - System.nanoTime()
-        if (wait > 0) LockSupport.parkNanos(wait)
+        // 0.125초마다: 밀리기 시작하면 바로 망 속도에 맞는 비트레이트로 내린다 (LiveSession.fastTick).
+        repeat(8) {
+            next += 125_000_000L
+            val wait = next - System.nanoTime()
+            if (wait > 0) LockSupport.parkNanos(wait)
+            val delayNow = streamer.queueDelayMs()
+            val linkBps = streamer.linkBps(1_500)
+            if (net.onDelay(delayNow, linkBps, System.nanoTime() / 1_000_000) { LiveNet.totalBitrate(BITRATE, it) }) {
+                targetBitrate.set(LiveNet.limitBitrate(BITRATE, net.level))
+                if (debug) println("  %.2fs: 밀림 %dms, 잰 망 속도 %d kbps → %d단계 (%d kbps)".format((System.nanoTime() - link.startNs) / 1e9, delayNow, linkBps / 1000, net.level, targetBitrate.get() / 1000))
+            }
+        }
         val stats = streamer.takeStats()
         if (net.update(stats.drops, stats.fill, System.nanoTime() / 1_000_000)) {
-            targetBitrate.set(NetGovernor.limitBitrate(BITRATE, net.level))
+            targetBitrate.set(LiveNet.limitBitrate(BITRATE, net.level))
         }
-        val sent = streamer.bytesSent
-        val bytes = sendBuffer.update(targetBitrate.get(), (sent - lastBytesSent).toInt(), stats.delayMs)
-        lastBytesSent = sent
+        val bytes = LiveNet.sendBuffer(sendBufferBytes, targetBitrate.get() + LiveNet.AUDIO_BPS, stats.delayMs, stats.drops > 0)
         if (bytes != sendBufferBytes) {
             sendBufferBytes = bytes
             streamer.setSendBuffer(bytes)
         }
         audioSkippedMs += stats.skippedMs
+        if (debug && stats.drops > 0) println("  %ds: 건너뜀 %d번 (%dms), %d단계".format(t, stats.drops, stats.skippedMs, net.level))
         val a = arrivals.take()
         rows.append("$t,${link.kbpsAt(System.nanoTime() - 500_000_000)},${targetBitrate.get() / 1000},${net.level},${streamer.droppedFrames},")
-            .append("${stats.delayMs},${a[0]},${a[1]},${a[2]},${a[3]},${a[4]},${a[5]},${arrivals.viewer.delayMs(System.nanoTime())}\n")
+            .append("${stats.delayMs},${a[0]},${a[1]},${a[2]},${a[3]},${a[4]},${a[5]},${arrivals.viewer.delayMs(System.nanoTime())},${arrivals.viewer.stalls},$audioSkippedMs\n")
         if (streamer.isStalled(System.currentTimeMillis(), STALL_MS) || failure[0] != null) {
             stalledAt = t // 앱이라면 여기서 다시 연결한다
             break

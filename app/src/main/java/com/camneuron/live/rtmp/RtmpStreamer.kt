@@ -12,15 +12,13 @@ import java.nio.ByteBuffer
 class RtmpStreamer(
     private val publisher: RtmpPublisher,
     queueBytes: Int,
-    /** 대기열에서 이보다 오래 기다린 영상은 버린다 ([MediaQueue]). */
+    /** 대기열에서 이보다 오래 기다리면 쌓인 영상·소리를 버리고 건너뛴다 ([MediaQueue]). 폰 안에서 방송이 밀리는 상한. */
     maxDelayMs: Long,
-    /** 대기열에서 이보다 오래 기다린 소리는 버리고 건너뛴다 ([MediaQueue]). 폰 안에서 방송이 밀리는 상한. */
-    maxAudioDelayMs: Long = Long.MAX_VALUE,
     onNeedKeyFrame: () -> Unit,
     private val onFailed: (String) -> Unit,
     private val log: (String) -> Unit = {},
 ) {
-    private val queue = MediaQueue(queueBytes, maxDelayMs, maxAudioDelayMs = maxAudioDelayMs, onNeedKeyFrame = onNeedKeyFrame)
+    private val queue = MediaQueue(queueBytes, maxDelayMs, onNeedKeyFrame = onNeedKeyFrame)
     private val thread = Thread(::sendLoop, "rtmp-sender")
 
     @Volatile
@@ -65,6 +63,12 @@ class RtmpStreamer(
     }
 
     fun takeStats(): MediaQueue.Stats = queue.takeStats()
+
+    /** 지금 대기열 맨 앞이 기다린 시간 (ms). */
+    fun queueDelayMs(): Long = queue.currentDelayMs()
+
+    /** 방금([maxAgeMs] 안에) 잰 망의 업로드 속도 (bps). 쓰기가 막힌 적이 없으면 -1. [SendMeter] */
+    fun linkBps(maxAgeMs: Long): Int = publisher.linkBps(maxAgeMs)
 
     /** 비트레이트를 바꿨을 때 소켓 송신 버퍼도 맞춘다 ([RtmpPublisher.setSendBuffer]). */
     fun setSendBuffer(bytes: Int) = publisher.setSendBuffer(bytes)
@@ -151,6 +155,8 @@ class RtmpStreamer(
     private fun sendLoop() {
         try {
             while (running) {
+                // 보낼 것이 없으면 망이 다 싣고 있는 것이다: 그 시간은 망 속도를 재는 데서 뺀다.
+                if (queue.queuedBytes() == 0) publisher.idle()
                 val item = queue.take(500) ?: continue
                 writeStartedMs = System.currentTimeMillis()
                 publisher.send(item.chunkStreamId, item.type, item.sendTimestampMs, item.payload)

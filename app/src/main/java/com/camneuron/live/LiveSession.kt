@@ -16,7 +16,6 @@ import com.camneuron.core.encode.BeautySettings
 import com.camneuron.core.encode.BeautyStore
 import com.camneuron.core.encode.Codecs
 import com.camneuron.core.encode.VideoEncoder
-import com.camneuron.core.net.NetGovernor
 import com.camneuron.live.chzzk.ChzzkChat
 import com.camneuron.live.chzzk.ChzzkLiveStatus
 import com.camneuron.live.chzzk.ChzzkPrefs
@@ -37,7 +36,7 @@ import java.nio.ByteBuffer
  * 주소나 스트림 키가 틀렸을 가능성이 크므로 다시 시도하지 않고 멈춘다 ([onEnded]에 이유).
  * 카메라를 바꾸거나 미리보기가 붙고 떨어지면 연결은 유지하고 인코더만 새로 만든다. 영상 크기는 처음 정한 대로 지키고,
  * 영상 시각은 인코더마다 다시 맞춘다 ([VideoClock]). 카메라를 바꾸지 못하면 이전 카메라로 돌아가 방송을 잇는다.
- * 네트워크([NetGovernor])가 약하면 비트레이트를 [quality]보다 낮춘다. 폰이 뜨거우면([HeatGovernor]) 처리량을 먼저
+ * 네트워크가 약하면 ([UploadGovernor]) 비트레이트를 [quality]보다 낮춘다. 폰이 뜨거우면([HeatGovernor]) 처리량을 먼저
  * 줄인다 (60fps면 30fps로, 위젯 그림 뜨기를 드물게, 가장 뜨거울 때만 비트레이트를 조금. [LiveHeat]).
  * 방송 중에 해상도를 바꾸면 시청자 플레이어가 멈추는 경우가 있어 해상도는 바꾸지 않는다.
  * 마이크 끄기와 화면 가리기는 [LiveControls]를 따라 지금 인코더에 바로 적용한다.
@@ -128,10 +127,7 @@ class LiveSession(
     private var lastBytesSent = 0L
     private var lastTickMs = 0L
 
-    /** 지금 연결의 소켓 송신 버퍼 크기를 정하는 것과, 마지막으로 정한 크기 (연결할 때 정한 그대로면 0). */
-    @Volatile
-    private var sendBuffer = LiveNet.SendBuffer()
-
+    /** 지금 연결에 정해 둔 소켓 송신 버퍼 크기 ([LiveNet.sendBuffer]). */
     @Volatile
     private var sendBufferBytes = 0
 
@@ -169,7 +165,8 @@ class LiveSession(
         try {
             while (!stopped) {
                 connectionLost = null
-                val publisher = RtmpPublisher(url, streamKey, RtmpPublisher.sendBufferFor(targetBitrate)) { Log.i(TAG, it) }
+                val bufferBytes = RtmpPublisher.sendBufferFor(targetBitrate + LiveNet.AUDIO_BPS)
+                val publisher = RtmpPublisher(url, streamKey, bufferBytes) { Log.i(TAG, it) }
                 var active: RtmpStreamer? = null
                 try {
                     connecting = publisher
@@ -180,15 +177,13 @@ class LiveSession(
                         publisher,
                         queueBytes = quality.bitrate / 8 * LiveNet.QUEUE_SECONDS,
                         maxDelayMs = LiveNet.QUEUE_SECONDS * 1000L,
-                        maxAudioDelayMs = LiveNet.AUDIO_QUEUE_SECONDS * 1000L,
                         onNeedKeyFrame = { encoder?.requestKeyFrame() },
                         onFailed = { lose(it) },
                         log = { Log.i(TAG, it) },
                     )
                     streamer = active
                     lastBytesSent = 0L
-                    sendBuffer = LiveNet.SendBuffer()
-                    sendBufferBytes = 0
+                    sendBufferBytes = bufferBytes
                     active.start()
                     everLive = true
                     LiveState.update { it.copy(phase = LiveState.Phase.LIVE, message = null) }
@@ -500,16 +495,36 @@ class LiveSession(
     }
 
     // ------------------------------------------------------------------------------------------
-    // 1초마다: 발열·네트워크 대응, 끊김 감지, 화면 상태
+    // 1초마다: 발열·네트워크 대응, 끊김 감지, 화면 상태. 그 사이 0.125초마다: 대기열이 밀리기 시작했는지.
 
     private fun tickLoop() {
         try {
+            var count = 0
             while (!stopped) {
-                Thread.sleep(TICK_MS)
-                tick()
+                Thread.sleep(FAST_TICK_MS)
+                fastTick()
+                if (++count % (TICK_MS / FAST_TICK_MS).toInt() == 0) tick()
             }
         } catch (_: InterruptedException) {
         }
+    }
+
+    /**
+     * 대기열이 밀리기 시작하면 (망이 갑자기 느려졌다) 1초 틱을 기다리지 않고 바로 망 속도에 맞는 비트레이트로 내린다.
+     * 1초를 기다리면 그사이에 쌓인 것만으로 한도를 넘어 건너뛰게 된다 ([UploadGovernor.onDelay]).
+     */
+    private fun fastTick() {
+        val active = streamer ?: return
+        val base = LiveHeat.bitrate(quality.bitrate, heat.level)
+        val link = active.linkBps(LINK_SPEED_AGE_MS)
+        val lowered = net.onDelay(active.queueDelayMs(), link, SystemClock.elapsedRealtime()) { LiveNet.totalBitrate(base, it) }
+        if (lowered) applyBitrate()
+    }
+
+    private fun applyBitrate() {
+        targetBitrate = LiveNet.limitBitrate(LiveHeat.bitrate(quality.bitrate, heat.level), net.level)
+        Log.i(TAG, "bitrate ${targetBitrate / 1000} kbps (heat ${heat.level}, net ${net.level})")
+        encoder?.setBitrate(targetBitrate)
     }
 
     private fun tick() {
@@ -520,19 +535,17 @@ class LiveSession(
 
         val active = streamer
         var kbps = 0
-        var sentBytesPerS = -1 // 아직 재지 못했으면 -1
         var sendDelayMs = 0L
+        var skipped = false
         if (active != null) {
             val stats = active.takeStats()
             sendDelayMs = stats.delayMs
+            skipped = stats.drops > 0
             changed = net.update(stats.drops, stats.fill, now) || changed
-            if (stats.skippedMs > 0) Log.i(TAG, "upload too slow even for sound: skipped ${stats.skippedMs} ms")
+            if (stats.skippedMs > 0) Log.i(TAG, "upload fell behind: skipped ${stats.skippedMs} ms")
             val sent = active.bytesSent
             val elapsed = if (lastTickMs > 0) now - lastTickMs else TICK_MS
-            if (lastBytesSent > 0) {
-                kbps = ((sent - lastBytesSent) * 8 / elapsed.coerceAtLeast(1)).toInt()
-                sentBytesPerS = ((sent - lastBytesSent) * 1000 / elapsed.coerceAtLeast(1)).toInt()
-            }
+            if (lastBytesSent > 0) kbps = ((sent - lastBytesSent) * 8 / elapsed.coerceAtLeast(1)).toInt()
             lastBytesSent = sent
             if (active.isStalled(System.currentTimeMillis(), STALL_MS)) {
                 lose("네트워크가 멈춤")
@@ -541,14 +554,10 @@ class LiveSession(
         }
         lastTickMs = now
 
-        if (changed) {
-            targetBitrate = NetGovernor.limitBitrate(LiveHeat.bitrate(quality.bitrate, heat.level), net.level)
-            Log.i(TAG, "bitrate ${targetBitrate / 1000} kbps (heat ${heat.level}, net ${net.level})")
-            encoder?.setBitrate(targetBitrate)
-        }
+        if (changed) applyBitrate()
         if (active != null) {
-            // 소켓 버퍼는 지금 비트레이트에 맞추고, 밀려 있는 동안에는 실제로 나가는 속도까지 줄인다.
-            val bytes = sendBuffer.update(targetBitrate, sentBytesPerS, sendDelayMs)
+            // 소켓 버퍼는 지금 비트레이트에 맞춘다. 줄이는 것은 대기열이 비어 있거나 방금 건너뛰었을 때만.
+            val bytes = LiveNet.sendBuffer(sendBufferBytes, targetBitrate + LiveNet.AUDIO_BPS, sendDelayMs, skipped)
             if (bytes != sendBufferBytes) {
                 sendBufferBytes = bytes
                 active.setSendBuffer(bytes)
@@ -619,6 +628,10 @@ class LiveSession(
         private const val CAMERA_ERROR_SHOW_MS = 15_000L
         private const val RETRY_MS = 3_000L
         private const val TICK_MS = 1_000L
+        private const val FAST_TICK_MS = 125L
+
+        /** 잰 망 속도는 이만큼 지나면 쓰지 않는다. */
+        private const val LINK_SPEED_AGE_MS = 1_500L
         private const val STALL_MS = 10_000L
         private const val ENCODER_FAILURE_WINDOW_MS = 60_000L
         private const val MAX_ENCODER_FAILURES = 3

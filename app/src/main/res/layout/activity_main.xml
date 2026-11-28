@@ -943,33 +943,45 @@
             <TextView
                 android:id="@+id/btn_widget_auto"
                 style="@style/SideButton"
+                android:minWidth="64dp"
                 android:text="@string/btn_widget_auto" />
 
             <!-- 방송 화면에 문구를 넣거나 고친다 ("룰렛 있음" 등). -->
             <TextView
                 android:id="@+id/btn_widget_text"
                 style="@style/SideButton"
-                android:layout_marginStart="12dp"
-                android:minWidth="72dp"
+                android:layout_marginStart="8dp"
+                android:minWidth="64dp"
                 android:text="@string/btn_widget_text" />
+
+            <!-- 위젯·글자를 하나씩 켜고 끈다 (방송 중에도). -->
+            <TextView
+                android:id="@+id/btn_widget_switch"
+                style="@style/SideButton"
+                android:layout_marginStart="8dp"
+                android:minWidth="64dp"
+                android:text="@string/btn_widget_switch" />
 
             <!-- 후원 위젯이 멈췄을 때: 재생 중인 후원만 넘기기 (밀린 다음 후원은 남는다), 그래도 안 되면 페이지 새로고침. -->
             <TextView
                 android:id="@+id/btn_widget_skip"
                 style="@style/SideButton"
-                android:layout_marginStart="12dp"
+                android:layout_marginStart="8dp"
+                android:minWidth="64dp"
                 android:text="@string/btn_widget_skip" />
 
             <TextView
                 android:id="@+id/btn_widget_reload"
                 style="@style/SideButton"
-                android:layout_marginStart="12dp"
+                android:layout_marginStart="8dp"
+                android:minWidth="64dp"
                 android:text="@string/btn_widget_reload" />
 
             <TextView
                 android:id="@+id/btn_widget_done"
                 style="@style/SideButton"
-                android:layout_marginStart="12dp"
+                android:layout_marginStart="8dp"
+                android:minWidth="64dp"
                 android:text="@string/btn_widget_done" />
         </LinearLayout>
 

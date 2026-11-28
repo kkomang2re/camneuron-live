@@ -10,30 +10,40 @@ class MediaQueueTest {
     private fun item(kind: MediaQueue.Kind, size: Int, ts: Long = 0) =
         MediaQueue.Item(kind, ChunkWriter.CSID_VIDEO, RtmpMessage.VIDEO, ts, ByteArray(size))
 
+    private fun audio(ts: Long, size: Int = 10) =
+        MediaQueue.Item(MediaQueue.Kind.AUDIO, ChunkWriter.CSID_AUDIO, RtmpMessage.AUDIO, ts, ByteArray(size))
+
+    private fun timed(clock: () -> Long, onNeedKeyFrame: () -> Unit = {}) =
+        MediaQueue(1_000_000, maxDelayMs = 2_000, clockMs = clock, onNeedKeyFrame = onNeedKeyFrame)
+
     @Test
-    fun overflow_dropsQueuedVideoAndWaitsForKeyFrame() {
+    fun overflow_dropsEverythingQueuedAndWaitsForKeyFrame() {
         var keyRequests = 0
         val queue = MediaQueue(100) { keyRequests++ }
         assertTrue(queue.offer(item(MediaQueue.Kind.KEY_FRAME, 40)))
         assertTrue(queue.offer(item(MediaQueue.Kind.FRAME, 40)))
-        assertTrue(queue.offer(item(MediaQueue.Kind.AUDIO, 10)))
-        // 넘친다: 쌓인 영상 둘과 이 프레임을 버리고 키프레임을 요청한다. 소리는 남는다.
+        assertTrue(queue.offer(audio(0)))
+        // 넘친다: 쌓인 영상 둘과 소리, 그리고 이 프레임을 버리고 키프레임을 요청한다.
         assertFalse(queue.offer(item(MediaQueue.Kind.FRAME, 40)))
         assertEquals(1, keyRequests)
         assertEquals(3, queue.droppedFrames)
-        assertEquals(10, queue.queuedBytes())
-        // 키프레임 전의 중간 프레임은 자리가 있어도 버린다.
+        assertEquals(0, queue.queuedBytes())
+        // 키프레임 전에는 자리가 있어도 프레임도 소리도 받지 않는다 (영상 없이 소리만 가면 시청자 지연이 된다).
         assertFalse(queue.offer(item(MediaQueue.Kind.FRAME, 5)))
+        assertFalse(queue.offer(audio(0)))
+        assertEquals(1, keyRequests)
         assertTrue(queue.offer(item(MediaQueue.Kind.KEY_FRAME, 50)))
         assertTrue(queue.offer(item(MediaQueue.Kind.FRAME, 5)))
+        assertTrue(queue.offer(audio(0)))
 
-        assertEquals(MediaQueue.Kind.AUDIO, queue.take(0)!!.kind)
         assertEquals(MediaQueue.Kind.KEY_FRAME, queue.take(0)!!.kind)
         assertEquals(MediaQueue.Kind.FRAME, queue.take(0)!!.kind)
+        assertEquals(MediaQueue.Kind.AUDIO, queue.take(0)!!.kind)
         assertNull(queue.take(0))
 
         val stats = queue.takeStats()
         assertEquals(1, stats.drops)
+        assertEquals(2, stats.droppedAudio)
         assertEquals(0.9f, stats.fill, 0.001f)
     }
 
@@ -46,28 +56,20 @@ class MediaQueueTest {
     }
 
     @Test
-    fun audioIsDroppedOnlyWhenNoVideoToDrop() {
-        var keyRequests = 0
-        val queue = MediaQueue(20) { keyRequests++ }
-        assertTrue(queue.offer(item(MediaQueue.Kind.AUDIO, 15)))
-        assertFalse(queue.offer(item(MediaQueue.Kind.AUDIO, 10)))
-        assertEquals(0, keyRequests)
-        assertEquals(1, queue.takeStats().droppedAudio)
-    }
-
-    @Test
     fun oversizedKeyFrameIsStillQueued() {
-        val queue = MediaQueue(10)
+        var keyRequests = 0
+        val queue = MediaQueue(10) { keyRequests++ }
         assertTrue(queue.offer(item(MediaQueue.Kind.KEY_FRAME, 30)))
         assertTrue(queue.offer(item(MediaQueue.Kind.KEY_FRAME, 30))) // 앞의 것을 버리고 넣는다
         assertEquals(30, queue.queuedBytes())
+        assertEquals(0, keyRequests) // 키프레임이 왔으니 달라고 할 것이 없다
     }
 
     @Test
-    fun waitingTooLong_dropsQueuedVideoEvenWithRoomLeft() {
+    fun waitingTooLong_skipsEvenWithRoomLeft() {
         var now = 0L
         var keyRequests = 0
-        val queue = MediaQueue(1_000_000, maxDelayMs = 2_000, clockMs = { now }) { keyRequests++ }
+        val queue = timed({ now }) { keyRequests++ }
         assertTrue(queue.offer(item(MediaQueue.Kind.KEY_FRAME, 100)))
         now = 1_000
         assertTrue(queue.offer(item(MediaQueue.Kind.FRAME, 100)))
@@ -75,7 +77,7 @@ class MediaQueueTest {
         assertTrue(queue.offer(item(MediaQueue.Kind.FRAME, 100))) // 딱 2초: 아직 괜찮다
         assertEquals(0, keyRequests)
 
-        // 맨 앞이 2초 넘게 기다렸다 (업로드가 느리다). 자리는 넉넉해도 쌓인 영상을 버리고 키프레임부터 다시.
+        // 맨 앞이 2초 넘게 기다렸다 (업로드가 느리다). 자리는 넉넉해도 쌓인 것을 버리고 키프레임부터 다시.
         now = 2_001
         assertFalse(queue.offer(item(MediaQueue.Kind.FRAME, 100)))
         assertEquals(1, keyRequests)
@@ -109,76 +111,75 @@ class MediaQueueTest {
         assertTrue(queue.offer(item(MediaQueue.Kind.KEY_FRAME, 100)))
         now = 60_000
         assertTrue(queue.offer(item(MediaQueue.Kind.FRAME, 100)))
-        assertEquals(0.2f, queue.takeStats().fill, 0.001f)
+        assertTrue(queue.offer(audio(60_000)))
+        assertEquals(0.21f, queue.takeStats().fill, 0.001f)
     }
 
     @Test
-    fun audioDoesNotWaitBehindStaleVideo() {
+    fun soundIsSkippedTogetherWithVideo() {
         var now = 0L
         var keyRequests = 0
-        val queue = MediaQueue(1_000_000, maxDelayMs = 2_000, clockMs = { now }) { keyRequests++ }
+        val queue = timed({ now }) { keyRequests++ }
         assertTrue(queue.offer(item(MediaQueue.Kind.KEY_FRAME, 100)))
         assertTrue(queue.offer(item(MediaQueue.Kind.FRAME, 100)))
+        assertTrue(queue.offer(audio(0)))
         now = 2_500
-        // 소리가 오면 밀린 영상을 버리고 소리는 넣는다. 다음 영상은 키프레임부터.
-        assertTrue(queue.offer(item(MediaQueue.Kind.AUDIO, 10)))
+        // 소리가 왔을 때 밀려 있었다: 영상도 소리도 (이 소리까지) 버린다. 소리만 남겨 보내지 않는다.
+        assertFalse(queue.offer(audio(2_500)))
         assertEquals(1, keyRequests)
-        assertEquals(10, queue.queuedBytes())
-        assertFalse(queue.offer(item(MediaQueue.Kind.FRAME, 100)))
+        assertEquals(0, queue.queuedBytes())
+        assertEquals(2, queue.droppedFrames)
+        assertEquals(2, queue.takeStats().droppedAudio)
+        assertFalse(queue.offer(audio(2_520)))
+        assertTrue(queue.offer(item(MediaQueue.Kind.KEY_FRAME, 100)))
+        assertTrue(queue.offer(audio(2_540)))
     }
 
-    private fun audio(ts: Long, size: Int = 10) =
-        MediaQueue.Item(MediaQueue.Kind.AUDIO, ChunkWriter.CSID_AUDIO, RtmpMessage.AUDIO, ts, ByteArray(size))
-
-    private fun limited(clock: () -> Long, onNeedKeyFrame: () -> Unit = {}) =
-        MediaQueue(1_000_000, maxDelayMs = 2_000, clockMs = clock, maxAudioDelayMs = 3_000, onNeedKeyFrame = onNeedKeyFrame)
-
     @Test
-    fun soundWaitingTooLong_isSkippedAndTheTimelineContinuesWithoutAGap() {
+    fun skipContinuesTheTimelineWithoutAGap() {
         var now = 0L
         var keyRequests = 0
-        val queue = limited({ now }) { keyRequests++ }
+        val queue = timed({ now }) { keyRequests++ }
         assertTrue(queue.offer(item(MediaQueue.Kind.KEY_FRAME, 100, ts = 0)))
         assertTrue(queue.offer(audio(0)))
         assertEquals(0L, queue.take(0)!!.sendTimestampMs)
         assertEquals(0L, queue.take(0)!!.sendTimestampMs)
 
-        // 업로드가 멈췄다: 소리만 쌓인다. 3초까지는 둔다.
+        // 업로드가 멈췄다: 영상과 소리가 쌓인다.
         now = 100
+        assertTrue(queue.offer(item(MediaQueue.Kind.FRAME, 100, ts = 100)))
         assertTrue(queue.offer(audio(100)))
         now = 1_100
         assertTrue(queue.offer(audio(1_100)))
-        now = 3_100
-        assertTrue(queue.offer(audio(3_100)))
-        assertEquals(30, queue.queuedBytes())
         assertEquals(0L, queue.takeStats().skippedMs)
+        now = 2_101
+        assertFalse(queue.offer(audio(2_101)))
+        assertEquals(1, keyRequests)
 
-        // 맨 앞 소리가 3초 넘게 기다렸다: 쌓인 소리를 버리고, 이번 것을 방금 보낸 것 바로 뒤에 잇는다.
-        now = 3_101
-        val next = audio(3_101)
-        assertTrue(queue.offer(next))
-        assertEquals(10, queue.queuedBytes())
-        assertEquals(20L, next.sendTimestampMs)
-        val stats = queue.takeStats()
-        assertEquals(3_081L, stats.skippedMs)
-        assertEquals(3, stats.droppedAudio)
-        assertEquals(1, stats.drops)
-        assertEquals(1, keyRequests) // 영상은 키프레임부터 다시
-
-        // 그 뒤로는 영상도 소리도 같은 만큼 당겨진다 (둘이 어긋나지 않는다).
-        val later = audio(3_122)
-        val key = item(MediaQueue.Kind.KEY_FRAME, 100, ts = 3_130)
-        assertTrue(queue.offer(later))
+        // 키프레임이 오면 방금 보낸 것(0ms) 바로 뒤에 잇는다. 건너뛴 시간은 방송에서 빠진다.
+        now = 2_150
+        val key = item(MediaQueue.Kind.KEY_FRAME, 100, ts = 2_150)
         assertTrue(queue.offer(key))
-        assertEquals(41L, later.sendTimestampMs)
-        assertEquals(49L, key.sendTimestampMs)
-        assertEquals(3_130L, key.timestampMs)
+        assertEquals(20L, key.sendTimestampMs)
+        assertEquals(2_150L, key.timestampMs)
+        // 그 뒤로는 영상도 소리도 같은 만큼 당겨진다 (둘이 어긋나지 않는다).
+        val sound = audio(2_160)
+        val frame = item(MediaQueue.Kind.FRAME, 100, ts = 2_183)
+        assertTrue(queue.offer(sound))
+        assertTrue(queue.offer(frame))
+        assertEquals(30L, sound.sendTimestampMs)
+        assertEquals(53L, frame.sendTimestampMs)
+
+        val stats = queue.takeStats()
+        assertEquals(2_130L, stats.skippedMs)
+        assertEquals(1, stats.drops)
+        assertEquals(3, stats.droppedAudio)
     }
 
     @Test
     fun skipKeepsSequenceHeadersAndNeverSendsTimeBackwards() {
         var now = 0L
-        val queue = limited({ now })
+        val queue = timed({ now })
         assertTrue(queue.offer(audio(0)))
         assertEquals(0L, queue.take(0)!!.sendTimestampMs)
         now = 500
@@ -188,187 +189,74 @@ class MediaQueueTest {
         assertTrue(queue.offer(header))
         assertEquals(2_000L, header.sendTimestampMs)
 
-        now = 3_600
-        val next = audio(3_600)
-        assertTrue(queue.offer(next))
-        // 헤더는 남고, 건너뛴 자리로 당겨진다. 그 뒤 것들은 그보다 이르지 않다.
-        assertEquals(50, queue.queuedBytes())
+        now = 2_600
+        assertFalse(queue.offer(audio(2_600)))
+        // 헤더는 남고, 방금 보낸 것 바로 뒤로 당겨진다.
+        assertEquals(40, queue.queuedBytes())
         assertEquals(20L, header.sendTimestampMs)
-        assertEquals(20L, next.sendTimestampMs)
-        assertEquals(MediaQueue.Kind.ESSENTIAL, queue.take(0)!!.kind)
-        val key = item(MediaQueue.Kind.KEY_FRAME, 100, ts = 3_610)
+
+        now = 2_610
+        val key = item(MediaQueue.Kind.KEY_FRAME, 100, ts = 2_610)
+        val sound = audio(2_620)
         assertTrue(queue.offer(key))
-        assertEquals(30L, key.sendTimestampMs)
-        assertEquals(MediaQueue.Kind.AUDIO, queue.take(0)!!.kind)
+        assertTrue(queue.offer(sound))
+        assertEquals(40L, key.sendTimestampMs) // 헤더보다 이르지 않다
+        assertEquals(50L, sound.sendTimestampMs)
+        assertEquals(MediaQueue.Kind.ESSENTIAL, queue.take(0)!!.kind)
         assertEquals(MediaQueue.Kind.KEY_FRAME, queue.take(0)!!.kind)
+        assertEquals(MediaQueue.Kind.AUDIO, queue.take(0)!!.kind)
     }
 
     @Test
-    fun videoRestartsOnlyAfterQueuedSoundHasGone() {
+    fun sequenceHeaderArrivingWhileWaitingStaysAtTheResumePoint() {
         var now = 0L
-        var keyRequests = 0
-        val queue = limited({ now }) { keyRequests++ }
-        assertTrue(queue.offer(item(MediaQueue.Kind.KEY_FRAME, 100)))
-        assertTrue(queue.offer(item(MediaQueue.Kind.FRAME, 100)))
-        assertTrue(queue.offer(audio(0)))
-        assertEquals(MediaQueue.Kind.KEY_FRAME, queue.take(0)!!.kind) // 송신 스레드가 이것을 보내느라 막혀 있다
+        val queue = timed({ now })
+        assertTrue(queue.offer(item(MediaQueue.Kind.KEY_FRAME, 100, ts = 0)))
+        assertEquals(0L, queue.take(0)!!.sendTimestampMs)
+        now = 10
+        assertTrue(queue.offer(item(MediaQueue.Kind.FRAME, 100, ts = 10)))
+        now = 2_011
+        assertFalse(queue.offer(item(MediaQueue.Kind.FRAME, 100, ts = 2_011)))
 
-        // 2초 넘게 밀렸다: 영상을 버린다. 소리가 아직 2초 밀려 있으므로 키프레임은 지금 달라고 하지 않는다.
+        // 키프레임을 기다리는 동안 인코더가 새로 만들어져 (카메라 전환) 새 헤더와 키프레임이 온다.
+        now = 3_000
+        val header = item(MediaQueue.Kind.ESSENTIAL, 40, ts = 3_000)
+        val key = item(MediaQueue.Kind.KEY_FRAME, 100, ts = 3_000)
+        assertTrue(queue.offer(header))
+        assertTrue(queue.offer(key))
+        assertEquals(20L, header.sendTimestampMs)
+        assertEquals(40L, key.sendTimestampMs)
+        assertEquals(2_960L, queue.takeStats().skippedMs)
+    }
+
+    @Test
+    fun beforeAnythingWasSent_thereIsNothingToContinueFrom() {
+        var now = 0L
+        val queue = timed({ now })
+        assertTrue(queue.offer(item(MediaQueue.Kind.KEY_FRAME, 100, ts = 1_000)))
         now = 2_001
-        assertTrue(queue.offer(audio(2_001)))
-        assertEquals(20, queue.queuedBytes())
-        assertEquals(0, keyRequests)
-        // 그 사이에 온 키프레임(2초마다 오는 것)도 넣지 않는다: 느린 망에서 소리가 그 뒤로 더 밀린다.
-        now = 2_010
-        assertFalse(queue.offer(item(MediaQueue.Kind.KEY_FRAME, 100)))
-        assertFalse(queue.offer(item(MediaQueue.Kind.FRAME, 100)))
-        assertEquals(0, keyRequests)
-
-        // 밀린 소리가 나가면 그때 키프레임을 달라고 하고, 온 것을 넣는다.
-        assertEquals(MediaQueue.Kind.AUDIO, queue.take(0)!!.kind)
-        assertEquals(1, keyRequests)
-        assertTrue(queue.offer(item(MediaQueue.Kind.KEY_FRAME, 100)))
-        assertTrue(queue.offer(item(MediaQueue.Kind.FRAME, 100)))
-        assertEquals(MediaQueue.Kind.AUDIO, queue.take(0)!!.kind)
-        assertEquals(1, keyRequests)
+        assertFalse(queue.offer(item(MediaQueue.Kind.FRAME, 100, ts = 3_001)))
+        val key = item(MediaQueue.Kind.KEY_FRAME, 100, ts = 3_050)
+        assertTrue(queue.offer(key))
+        assertEquals(3_050L, key.sendTimestampMs)
+        assertEquals(0L, queue.takeStats().skippedMs)
     }
 
     @Test
-    fun whenRestartedVideoChokesTheLink_videoRestsLongerEachTime() {
+    fun aStuckSequenceHeaderDoesNotMakeEveryFrameSkip() {
         var now = 0L
         var keyRequests = 0
-        val queue = limited({ now }) { keyRequests++ }
-
-        /**
-         * 영상을 다시 시작하고(키프레임이 들어가 송신 스레드가 붙잡고 있다) 3초 뒤 소리까지 건너뛴다.
-         * 그 뒤에 온 소리는 바로 나간다. 건너뛴 시각을 돌려준다.
-         */
-        fun restartThenChoke(): Long {
-            assertTrue(queue.offer(item(MediaQueue.Kind.KEY_FRAME, 100)))
-            assertEquals(MediaQueue.Kind.KEY_FRAME, queue.take(0)!!.kind)
-            now += 10
-            assertTrue(queue.offer(audio(now)))
-            now += 3_001
-            assertTrue(queue.offer(audio(now)))
-            assertEquals(MediaQueue.Kind.AUDIO, queue.take(0)!!.kind)
-            return now
-        }
-
-        // 처음: 영상이 밀려 버려진 뒤 다시 시작한다.
+        val queue = timed({ now }) { keyRequests++ }
+        // 송신 스레드가 막혀 헤더가 대기열에 오래 남아 있다. 버릴 수 없는 것이므로 밀린 정도는 영상·소리로 잰다.
+        assertTrue(queue.offer(item(MediaQueue.Kind.ESSENTIAL, 40)))
+        now = 5_000
         assertTrue(queue.offer(item(MediaQueue.Kind.KEY_FRAME, 100)))
+        now = 5_033
         assertTrue(queue.offer(item(MediaQueue.Kind.FRAME, 100)))
-        assertEquals(MediaQueue.Kind.KEY_FRAME, queue.take(0)!!.kind)
-        now = 2_001
+        assertEquals(0, keyRequests)
+        now = 7_001
         assertFalse(queue.offer(item(MediaQueue.Kind.FRAME, 100)))
         assertEquals(1, keyRequests)
-
-        // 다시 시작하자마자 소리까지 건너뛰었다: 5초 동안 영상을 쉰다 (소리만 보낸다).
-        var skippedAt = restartThenChoke()
-        assertEquals(1, keyRequests)
-        // 쉬는 동안에는 대기열이 비어 있어도 망이 좋아진 것으로 알리지 않는다 (비트레이트를 도로 올리지 않게).
-        queue.takeStats()
-        now = skippedAt + 2_000
-        assertEquals(0.3f, queue.takeStats().fill, 0.001f)
-        now = skippedAt + 4_999
-        assertFalse(queue.offer(item(MediaQueue.Kind.KEY_FRAME, 100)))
-        assertTrue(queue.offer(audio(now)))
-        assertEquals(MediaQueue.Kind.AUDIO, queue.take(0)!!.kind)
-        assertEquals(1, keyRequests)
-        now = skippedAt + 5_000
-        assertTrue(queue.offer(audio(now)))
-        assertEquals(MediaQueue.Kind.AUDIO, queue.take(0)!!.kind)
-        assertEquals(2, keyRequests) // 쉬는 시간이 끝났다
-
-        // 또 그랬다: 이번에는 10초.
-        skippedAt = restartThenChoke()
-        now = skippedAt + 9_999
-        assertFalse(queue.offer(item(MediaQueue.Kind.KEY_FRAME, 100)))
-        assertTrue(queue.offer(audio(now)))
-        assertEquals(MediaQueue.Kind.AUDIO, queue.take(0)!!.kind)
-        assertEquals(2, keyRequests)
-        now = skippedAt + 10_000
-        assertTrue(queue.offer(audio(now)))
-        assertEquals(MediaQueue.Kind.AUDIO, queue.take(0)!!.kind)
-        assertEquals(3, keyRequests)
-
-        // 이번에는 버텼다 (6초 넘게 건너뛰지 않았다). 다음에 영상이 밀려도 쉬지 않고 바로 다시 시작한다.
-        assertTrue(queue.offer(item(MediaQueue.Kind.KEY_FRAME, 100)))
-        assertEquals(MediaQueue.Kind.KEY_FRAME, queue.take(0)!!.kind)
-        now += 60_000
-        assertTrue(queue.offer(item(MediaQueue.Kind.FRAME, 100)))
-        now += 2_001
-        assertFalse(queue.offer(item(MediaQueue.Kind.FRAME, 100)))
-        assertEquals(4, keyRequests)
-        assertTrue(queue.offer(item(MediaQueue.Kind.KEY_FRAME, 100)))
-        assertEquals(MediaQueue.Kind.KEY_FRAME, queue.take(0)!!.kind)
-        skippedAt = restartThenChoke().also { /* 다시 처음부터: 5초 */ }
-        now = skippedAt + 5_000
-        assertTrue(queue.offer(audio(now)))
-        assertEquals(MediaQueue.Kind.AUDIO, queue.take(0)!!.kind)
-        assertEquals(5, keyRequests)
-    }
-
-    @Test
-    fun afterARestartFailsQuickly_theNextTryDropsVideoSooner() {
-        var now = 0L
-        var keyRequests = 0
-        val queue = limited({ now }) { keyRequests++ }
-
-        /** 영상을 다시 시작한다: 키프레임은 송신 스레드가 가져가고, 그 뒤 프레임 하나가 대기열에서 기다린다. */
-        fun restart() {
-            now += 10
-            assertTrue(queue.offer(item(MediaQueue.Kind.KEY_FRAME, 100)))
-            assertEquals(MediaQueue.Kind.KEY_FRAME, queue.take(0)!!.kind)
-            assertTrue(queue.offer(item(MediaQueue.Kind.FRAME, 100)))
-        }
-
-        // 평소: 2초 넘게 밀려야 버린다.
-        restart()
-        now += 2_000
-        assertTrue(queue.offer(item(MediaQueue.Kind.FRAME, 100)))
-        now += 1
-        assertFalse(queue.offer(item(MediaQueue.Kind.FRAME, 100)))
-        assertEquals(1, keyRequests)
-
-        // 다시 시작했는데 6초도 못 가 또 밀렸다: 망이 영상을 못 싣는다.
-        restart()
-        now += 2_001
-        assertFalse(queue.offer(item(MediaQueue.Kind.FRAME, 100)))
-        assertEquals(2, keyRequests)
-
-        // 그 다음 시도는 1초만 밀려도 버린다 (소리가 그 뒤에서 덜 기다린다).
-        restart()
-        now += 1_000
-        assertTrue(queue.offer(item(MediaQueue.Kind.FRAME, 100)))
-        now += 1
-        assertFalse(queue.offer(item(MediaQueue.Kind.FRAME, 100)))
-        assertEquals(3, keyRequests)
-
-        // 이번에는 6초 넘게 버텼다: 다시 2초까지 기다려 준다. 그 뒤로도.
-        restart()
-        assertEquals(MediaQueue.Kind.FRAME, queue.take(0)!!.kind)
-        now += 7_000
-        assertTrue(queue.offer(item(MediaQueue.Kind.FRAME, 100)))
-        now += 1_500
-        assertTrue(queue.offer(item(MediaQueue.Kind.FRAME, 100)))
-        now += 501
-        assertFalse(queue.offer(item(MediaQueue.Kind.FRAME, 100)))
-        assertEquals(4, keyRequests)
-        restart()
-        now += 1_500
-        assertTrue(queue.offer(item(MediaQueue.Kind.FRAME, 100)))
-    }
-
-    @Test
-    fun withoutSoundLimit_soundIsKeptAsBefore() {
-        var now = 0L
-        val queue = MediaQueue(1_000_000, maxDelayMs = 2_000, clockMs = { now })
-        assertTrue(queue.offer(audio(0)))
-        now = 60_000
-        val late = audio(60_000)
-        assertTrue(queue.offer(late))
-        assertEquals(20, queue.queuedBytes())
-        assertEquals(60_000L, late.sendTimestampMs)
     }
 
     @Test

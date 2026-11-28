@@ -246,6 +246,12 @@
     <string name="error_bad_widget_url">주소는 https:// 또는 http:// 로 시작해야 합니다</string>
     <string name="toast_widget_edit">막대: 옮기기 · 모서리: 창 크기 · − +: 내용 크기
 어려우면 \"자동 배치\"</string>
+    <string name="btn_widget_switch">켜고 끄기</string>
+    <string name="widget_switch_title">위젯 켜고 끄기 (누르면 바로 반영)</string>
+    <string name="widget_switch_text">글자: %1$s</string>
+    <string name="widget_off">꺼짐</string>
+    <string name="toast_widgets_all_off">위젯이 모두 꺼져 있습니다. \"켜고 끄기\"에서 켜세요</string>
+    <string name="prep_widgets_count_off">%1$d개 켜짐 · %2$d개 꺼짐</string>
     <!-- 글자 소스 -->
     <string name="btn_widget_text">글자</string>
     <string name="btn_text_sources">방송 화면에 글자 넣기</string>

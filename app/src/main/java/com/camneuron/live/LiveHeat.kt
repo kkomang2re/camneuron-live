@@ -20,7 +20,7 @@ object LiveHeat {
     /** 이 단계에서 보낼 프레임 수. 요청한 값보다 높이지는 않는다. */
     fun fps(requested: Int, level: Int): Int = if (level >= 1) minOf(requested, MAX_FPS_WHEN_HOT) else requested
 
-    /** 이 단계에서 쓸 비트레이트 (bps). 네트워크 대응([com.camneuron.core.net.NetGovernor])은 이 값에서 다시 낮춘다. */
+    /** 이 단계에서 쓸 비트레이트 (bps). 네트워크 대응([UploadGovernor])은 이 값에서 다시 낮춘다. */
     fun bitrate(bitrate: Int, level: Int): Int = when {
         level <= 1 -> bitrate
         level == 2 -> (bitrate.toLong() * 9 / 10).toInt()

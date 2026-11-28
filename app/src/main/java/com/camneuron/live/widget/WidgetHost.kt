@@ -54,6 +54,9 @@ import java.util.concurrent.CopyOnWriteArraySet
  * [reloadAll]은 페이지를 다시 부른다. 페이지를 불러오지 못했으면 조금 뒤에 스스로 다시 부르고, 웹 페이지를 그리는
  * 프로세스가 죽으면 (메모리 부족 등) 웹 뷰를 새로 만든다. 그 일을 처리하지 않으면 앱까지 함께 죽는다.
  *
+ * 꺼 둔 위젯([OverlayItem.visible]이 false)은 주소가 없는 것과 같이 다룬다: 페이지를 닫고 그림도 지운다. 다시 켜면 페이지를
+ * 새로 부른다.
+ *
  * 쓰는 쪽(화면, 방송 세션)이 [acquire]/[release]로 붙고 떨어진다. 아무도 없으면 웹 페이지를 닫는다.
  * 모든 함수와 리스너는 메인 스레드에서 돈다.
  */
@@ -271,7 +274,7 @@ object WidgetHost {
             }
             if (content == null) return@forEachIndexed
             var slot = slots[index]
-            if (item == null || !item.active) {
+            if (item == null || !item.on) {
                 if (slot != null) {
                     slot.destroy()
                     content.removeView(slot.frame)
@@ -297,7 +300,7 @@ object WidgetHost {
         val previous = latest[index]
         if (item != null && previous != null && previous.item == item) return
         val bitmap = when {
-            item == null || !item.active -> null
+            item == null || !item.on -> null
             previous != null && TextRenderer.sameLook(previous.item, item) -> previous.bitmap
             else -> runCatching { TextRenderer.render(item) }.onFailure { Log.w(TAG, "text $index not drawn", it) }.getOrNull()
         }

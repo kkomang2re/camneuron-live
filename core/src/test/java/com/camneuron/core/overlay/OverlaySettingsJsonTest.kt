@@ -15,6 +15,7 @@ class OverlaySettingsJsonTest {
             texts = listOf(
                 OverlaySettings.DEFAULT_TEXT.copy(text = "룰렛 있음\n1,000원부터", textColor = 0xFFFFE14D.toInt(), textBackground = true, x = 0.5f),
                 OverlaySettings.DEFAULT_TEXT.copy(text = "폰에만", stream = false),
+                OverlaySettings.DEFAULT_TEXT.copy(text = "꺼 둔 글자", visible = false),
             ),
         )
         assertEquals(settings, OverlaySettings.fromJson(JSONObject(settings.toJson().toString())))

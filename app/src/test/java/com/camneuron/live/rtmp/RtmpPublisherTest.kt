@@ -247,13 +247,30 @@ class RtmpPublisherTest {
     }
 
     @Test
-    fun sendBufferIsAQuarterSecondOfTheCurrentBitrate() {
-        assertEquals(140_625, RtmpPublisher.sendBufferFor(4_500_000))
-        assertEquals(250_000, RtmpPublisher.sendBufferFor(8_000_000))
-        // 네트워크가 약해 35%로 낮췄을 때: 바닥값
-        assertEquals(49_218, RtmpPublisher.sendBufferFor(1_575_000))
-        assertEquals(48 * 1024, RtmpPublisher.sendBufferFor(1_000_000))
-        assertEquals(256 * 1024, RtmpPublisher.sendBufferFor(20_000_000))
+    fun bytesSentCountsWhatTheSocketTook() {
+        startServer()
+        val publisher = RtmpPublisher(url(), "k")
+        assertEquals(0L, publisher.bytesSent)
+        publisher.connect(5000)
+        val afterConnect = publisher.bytesSent
+        assertTrue(afterConnect > 3_000) // 핸드셰이크(C0+C1+C2)와 명령들
+        // 큰 키프레임 하나 (8KB씩 나눠 쓴다). 청크 헤더가 붙어 조금 더 나간다.
+        publisher.send(ChunkWriter.CSID_VIDEO, RtmpMessage.VIDEO, 0, ByteArray(100_000))
+        val sent = publisher.bytesSent - afterConnect
+        assertTrue("sent $sent", sent in 100_000..101_000)
+        assertEquals(100_000, nextMedia().payload.size)
+        publisher.close()
+    }
+
+    @Test
+    fun sendBufferIsAnEighthOfASecondOfTheCurrentBitrate() {
+        assertEquals(70_312, RtmpPublisher.sendBufferFor(4_500_000))
+        assertEquals(125_000, RtmpPublisher.sendBufferFor(8_000_000))
+        assertEquals(24_609, RtmpPublisher.sendBufferFor(1_575_000))
+        // 네트워크가 약해 많이 낮췄을 때: 바닥값
+        assertEquals(16 * 1024, RtmpPublisher.sendBufferFor(1_000_000))
+        assertEquals(16 * 1024, RtmpPublisher.sendBufferFor(575_000))
+        assertEquals(128 * 1024, RtmpPublisher.sendBufferFor(20_000_000))
     }
 
     @Test

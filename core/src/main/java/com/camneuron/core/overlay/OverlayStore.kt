@@ -12,6 +12,10 @@ import java.util.concurrent.CopyOnWriteArraySet
  */
 data class OverlayItem(
     val url: String = "",
+    /**
+     * 켜 둔 것인지. 끄면 (false) 주소·문구·자리는 그대로 두고 화면과 방송에서만 뺀다: 웹 위젯은 페이지도 닫아 소리가 나지
+     * 않고 폰도 덜 데운다. 방송 중에도 하나씩 켜고 끌 수 있다.
+     */
     val visible: Boolean = true,
     /** true면 OBS가 같은 URL을 캠 화면 위에 합성해 송출한다. false면 폰에서만 보인다. */
     val stream: Boolean = false,
@@ -33,6 +37,9 @@ data class OverlayItem(
 ) {
     /** 쓰는 칸인지: 웹 위젯은 주소가, 글자 소스는 문구가 있을 때. */
     val active: Boolean get() = url.isNotBlank() || text.isNotBlank()
+
+    /** 지금 켜져 있는지: 쓰는 칸이고 꺼 두지 않았을 때. */
+    val on: Boolean get() = active && visible
 
     fun toJson(): JSONObject = JSONObject()
         .put("url", url).put("visible", visible).put("stream", stream)
