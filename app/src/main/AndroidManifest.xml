@@ -52,6 +52,13 @@
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />
 
+        <!-- 위젯용 네이버 로그인 (치지직 19금 영상 후원이 위젯에서 나오게). 세로로 돌려도 된다. -->
+        <activity
+            android:name=".widget.WidgetLoginActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
         <!-- 방송하지 않는 채로 뒤에 오래 있으면 앱을 끄는 알람 (IdleExit). -->
         <receiver
             android:name=".IdleExitReceiver"

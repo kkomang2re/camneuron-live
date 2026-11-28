@@ -73,9 +73,11 @@ import com.camneuron.live.chzzk.ChzzkTags
 import com.camneuron.live.chzzk.LoginActivity
 import com.camneuron.live.rtmp.RtmpUrl
 import com.camneuron.live.widget.BrowserSources
+import com.camneuron.live.widget.NaverSession
 import com.camneuron.live.widget.TextSources
 import com.camneuron.live.widget.WidgetCanvas
 import com.camneuron.live.widget.WidgetLayout
+import com.camneuron.live.widget.WidgetLoginActivity
 import com.camneuron.live.widget.WidgetFrame
 import com.camneuron.live.widget.WidgetHost
 import com.camneuron.live.widget.WidgetUrls
@@ -765,6 +767,14 @@ class MainActivity : Activity() {
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_WIDGET_LOGIN) {
+            // 로그인했으면 위젯 페이지를 다시 불러 로그인된 상태로 뜨게 한다.
+            val loggedIn = NaverSession.loggedIn()
+            if (loggedIn) WidgetHost.reloadAll()
+            Toast.makeText(this, if (loggedIn) R.string.toast_widget_login_ok else R.string.toast_widget_login_none, Toast.LENGTH_LONG).show()
+            renderWidgetLogin()
+            return
+        }
         if (requestCode != REQUEST_LOGIN) return
         if (resultCode == RESULT_OK) {
             ChzzkChat.restart()
@@ -773,6 +783,13 @@ class MainActivity : Activity() {
             refreshPrepLiveInfo()
         }
         renderChzzkSettings()
+        renderWidgetLogin() // 치지직 로그인도 같은 브라우저에서 네이버에 로그인한다
+    }
+
+    /** 방송 설정의 "위젯 브라우저가 네이버에 로그인되어 있는지" 줄 ([NaverSession]). */
+    private fun renderWidgetLogin() {
+        findViewById<TextView>(R.id.widget_login_status)
+            .setText(if (NaverSession.loggedIn()) R.string.widget_login_on else R.string.widget_login_off)
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
@@ -1056,6 +1073,10 @@ class MainActivity : Activity() {
             if (saveSettings()) setEditingWidgets(true)
         }
         findViewById<View>(R.id.btn_widget_done).setOnClickListener { setEditingWidgets(false) }
+        findViewById<View>(R.id.btn_widget_login).setOnClickListener {
+            @Suppress("DEPRECATION")
+            startActivityForResult(Intent(this, WidgetLoginActivity::class.java), REQUEST_WIDGET_LOGIN)
+        }
         findViewById<View>(R.id.btn_widget_text).setOnClickListener { showTextSources() }
         findViewById<View>(R.id.btn_widget_switch).setOnClickListener { showWidgetSwitches() }
         findViewById<View>(R.id.btn_text_sources).setOnClickListener {
@@ -1362,6 +1383,7 @@ class MainActivity : Activity() {
                 Toast.makeText(this, R.string.chzzk_logged_out, Toast.LENGTH_SHORT).show()
                 ChzzkChat.restart()
                 renderChzzkSettings()
+                renderWidgetLogin() // 로그아웃은 앱 안 브라우저의 네이버 쿠키도 지운다
                 refreshPrepLiveInfo()
             }
         }
@@ -1793,6 +1815,7 @@ class MainActivity : Activity() {
             draftChatStream = overlays.chat.stream || !overlays.chat.active
             draftAlertStream = overlays.alert.stream || !overlays.alert.active
             renderWidgetDraft()
+            renderWidgetLogin()
             setEditingWidgets(false)
             settingsPanel.visibility = View.VISIBLE
         } else {
@@ -2187,6 +2210,7 @@ class MainActivity : Activity() {
         private const val REQUEST_PERMISSIONS = 1
         private const val FOCUS_RING_MS = 1_200L
         private const val REQUEST_LOGIN = 2
+        private const val REQUEST_WIDGET_LOGIN = 3
 
         /** 비어 있는 위젯 칸 (안 보인다). */
         private val EMPTY_WIDGET = OverlayItem(x = 0f, y = 0f, w = 0f, h = 0f)

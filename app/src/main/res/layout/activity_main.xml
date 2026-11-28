@@ -910,6 +910,18 @@
                     android:text="@string/widget_note"
                     android:textSize="12sp" />
 
+                <!-- 위젯을 그리는 앱 안 브라우저가 네이버에 로그인되어 있는지 (치지직 19금 영상 후원). 글자는 코드에서 넣는다. -->
+                <TextView
+                    android:id="@+id/widget_login_status"
+                    style="@style/PanelLabel"
+                    android:layout_marginTop="12dp" />
+
+                <TextView
+                    android:id="@+id/btn_widget_login"
+                    style="@style/SideButton"
+                    android:layout_marginTop="6dp"
+                    android:text="@string/btn_widget_login" />
+
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"

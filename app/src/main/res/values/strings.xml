@@ -246,6 +246,14 @@
     <string name="error_bad_widget_url">주소는 https:// 또는 http:// 로 시작해야 합니다</string>
     <string name="toast_widget_edit">막대: 옮기기 · 모서리: 창 크기 · − +: 내용 크기
 어려우면 \"자동 배치\"</string>
+    <string name="btn_widget_login">위젯용 네이버 로그인</string>
+    <string name="widget_login_on">위젯 브라우저: 네이버에 로그인되어 있습니다 (치지직 19금 클립·영상 후원이 나옵니다)</string>
+    <string name="widget_login_off">위젯 브라우저: 네이버에 로그인되어 있지 않습니다. 치지직 19금 클립·영상 후원은 성인 인증한 계정으로 로그인해야 위젯에 나옵니다. 로그인 화면에서 \"로그인 상태 유지\"를 켜야 앱을 다시 켜도 유지됩니다.</string>
+    <string name="widget_login_title">위젯용 네이버 로그인 · \"로그인 상태 유지\"를 켜세요</string>
+    <string name="widget_login_done_hint">로그인되어 있습니다 · \"완료\"를 누르세요</string>
+    <string name="btn_done">완료</string>
+    <string name="toast_widget_login_ok">로그인되었습니다. 위젯을 새로고침했습니다</string>
+    <string name="toast_widget_login_none">네이버에 로그인되어 있지 않습니다</string>
     <string name="btn_widget_switch">켜고 끄기</string>
     <string name="widget_switch_title">위젯 켜고 끄기 (누르면 바로 반영)</string>
     <string name="widget_switch_text">글자: %1$s</string>

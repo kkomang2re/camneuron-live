@@ -23,8 +23,8 @@ android {
         applicationId = "com.camneuron.live"
         minSdk = 26
         targetSdk = 36
-        versionCode = 14
-        versionName = "0.0.14"
+        versionCode = 15
+        versionName = "0.0.15"
     }
 
     signingConfigs {
