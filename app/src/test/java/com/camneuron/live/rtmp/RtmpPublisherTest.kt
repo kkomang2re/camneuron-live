@@ -143,7 +143,7 @@ class RtmpPublisherTest {
         val publisher = RtmpPublisher(url(), "k")
         publisher.connect(5000)
         val failures = mutableListOf<String>()
-        val streamer = RtmpStreamer(publisher, 1_000_000, onNeedKeyFrame = {}, onFailed = { failures += it })
+        val streamer = RtmpStreamer(publisher, 1_000_000, maxDelayMs = 2_000, onNeedKeyFrame = {}, onFailed = { failures += it })
         streamer.start()
 
         val sps = byteArrayOf(0x67, 0x42, 0x00, 0x1F, 0x11)
@@ -186,5 +186,102 @@ class RtmpPublisherTest {
 
         streamer.stop()
         assertTrue(failures.isEmpty())
+    }
+
+    @Test
+    fun streamer_newEncoderWithSameParametersContinuesWithoutANewHeader() {
+        startServer()
+        val publisher = RtmpPublisher(url(), "k")
+        publisher.connect(5000)
+        val streamer = RtmpStreamer(publisher, 1_000_000, maxDelayMs = 2_000, onNeedKeyFrame = {}, onFailed = {})
+        streamer.start()
+
+        val sps = byteArrayOf(0x67, 0x42, 0x00, 0x1F, 0x11)
+        val pps = byteArrayOf(0x68, 0x22)
+        val start = byteArrayOf(0, 0, 0, 1)
+        streamer.onVideoConfig(start + sps + start + pps)
+        streamer.onVideoFrame(1_000_000, start + byteArrayOf(0x65, 1), keyFrame = true)
+        // 카메라를 바꿨다: 같은 설정의 새 인코더. 키프레임 전의 프레임은 버리고, 시퀀스 헤더는 다시 보내지 않는다.
+        streamer.onVideoConfig(start + sps + start + pps)
+        streamer.onVideoFrame(2_000_000, start + byteArrayOf(0x41, 9), keyFrame = false)
+        streamer.onVideoFrame(2_200_000, start + byteArrayOf(0x65, 2), keyFrame = true)
+        streamer.onVideoFrame(2_233_000, start + byteArrayOf(0x41, 3), keyFrame = false)
+
+        assertArrayEquals(Flv.avcSequenceHeader(sps, pps), nextMedia().payload)
+        assertEquals(0L, nextMedia().timestamp)
+        val key = nextMedia()
+        assertEquals(0x17, key.payload[0].toInt())
+        assertEquals(1, key.payload[1].toInt()) // 헤더(0)가 아니라 프레임
+        assertEquals(1200L, key.timestamp)
+        val inter = nextMedia()
+        assertEquals(0x27, inter.payload[0].toInt())
+        assertEquals(1233L, inter.timestamp)
+        streamer.stop()
+    }
+
+    @Test
+    fun streamer_newEncoderWithOtherParametersSendsANewHeader() {
+        startServer()
+        val publisher = RtmpPublisher(url(), "k")
+        publisher.connect(5000)
+        val streamer = RtmpStreamer(publisher, 1_000_000, maxDelayMs = 2_000, onNeedKeyFrame = {}, onFailed = {})
+        streamer.start()
+
+        val sps = byteArrayOf(0x67, 0x42, 0x00, 0x1F, 0x11)
+        val sps30 = byteArrayOf(0x67, 0x42, 0x00, 0x1F, 0x22) // 프레임 수가 바뀌어 SPS가 달라졌다
+        val pps = byteArrayOf(0x68, 0x22)
+        val start = byteArrayOf(0, 0, 0, 1)
+        streamer.onVideoConfig(start + sps + start + pps)
+        streamer.onVideoFrame(1_000_000, start + byteArrayOf(0x65, 1), keyFrame = true)
+        streamer.onVideoConfig(start + sps30 + start + pps)
+        streamer.onVideoFrame(2_000_000, start + byteArrayOf(0x41, 9), keyFrame = false)
+        streamer.onVideoFrame(2_200_000, start + byteArrayOf(0x65, 2), keyFrame = true)
+
+        assertArrayEquals(Flv.avcSequenceHeader(sps, pps), nextMedia().payload)
+        assertEquals(0L, nextMedia().timestamp)
+        val header = nextMedia()
+        assertArrayEquals(Flv.avcSequenceHeader(sps30, pps), header.payload)
+        assertEquals(1200L, header.timestamp)
+        assertEquals(1200L, nextMedia().timestamp)
+        streamer.stop()
+    }
+
+    @Test
+    fun bytesSentCountsWhatTheSocketTook() {
+        startServer()
+        val publisher = RtmpPublisher(url(), "k")
+        assertEquals(0L, publisher.bytesSent)
+        publisher.connect(5000)
+        val afterConnect = publisher.bytesSent
+        assertTrue(afterConnect > 3_000) // 핸드셰이크(C0+C1+C2)와 명령들
+        // 큰 키프레임 하나 (8KB씩 나눠 쓴다). 청크 헤더가 붙어 조금 더 나간다.
+        publisher.send(ChunkWriter.CSID_VIDEO, RtmpMessage.VIDEO, 0, ByteArray(100_000))
+        val sent = publisher.bytesSent - afterConnect
+        assertTrue("sent $sent", sent in 100_000..101_000)
+        assertEquals(100_000, nextMedia().payload.size)
+        publisher.close()
+    }
+
+    @Test
+    fun sendBufferIsAnEighthOfASecondOfTheCurrentBitrate() {
+        assertEquals(70_312, RtmpPublisher.sendBufferFor(4_500_000))
+        assertEquals(125_000, RtmpPublisher.sendBufferFor(8_000_000))
+        assertEquals(24_609, RtmpPublisher.sendBufferFor(1_575_000))
+        // 네트워크가 약해 많이 낮췄을 때: 바닥값
+        assertEquals(16 * 1024, RtmpPublisher.sendBufferFor(1_000_000))
+        assertEquals(16 * 1024, RtmpPublisher.sendBufferFor(575_000))
+        assertEquals(128 * 1024, RtmpPublisher.sendBufferFor(20_000_000))
+    }
+
+    @Test
+    fun sendBufferCanBeChangedWhilePublishingAndAfterClose() {
+        startServer()
+        val publisher = RtmpPublisher(url(), "k", RtmpPublisher.sendBufferFor(4_500_000))
+        publisher.connect(5000)
+        publisher.setSendBuffer(RtmpPublisher.sendBufferFor(1_575_000))
+        publisher.send(ChunkWriter.CSID_VIDEO, RtmpMessage.VIDEO, 0, ByteArray(100_000))
+        assertEquals(100_000, generateSequence { nextMedia() }.first { it.type == RtmpMessage.VIDEO }.payload.size)
+        publisher.close()
+        publisher.setSendBuffer(100_000) // 닫힌 뒤에는 아무 일도 하지 않는다
     }
 }

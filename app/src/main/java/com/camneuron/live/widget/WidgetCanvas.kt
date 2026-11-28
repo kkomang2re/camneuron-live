@@ -25,6 +25,6 @@ object WidgetCanvas {
         return PixelRect(left, top, width, height)
     }
 
-    /** 송출에 얹을지: 주소가 있고 "방송에 넣기"를 켰을 때. */
-    fun streamed(item: OverlayItem): Boolean = item.active && item.stream
+    /** 송출에 얹을지: 켜져 있고 "방송에 넣기"를 켰을 때. */
+    fun streamed(item: OverlayItem): Boolean = item.on && item.stream
 }

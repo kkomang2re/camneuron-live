@@ -31,6 +31,25 @@ class WidgetLayoutTest {
         assertEquals(Kind.ALERT, WidgetLayout.kind(first, source.copy(name = "룰렛", url = "https://example.com/x")))
         assertEquals(Kind.ALERT, WidgetLayout.kind(first, source.copy(name = "후원 알림", url = "https://example.com/chat")))
         assertEquals(Kind.CHAT, WidgetLayout.kind(first, source.copy(name = "Chat", url = "https://example.com/x")))
+        // "영상 후원"은 후원 알림이 아니라 영상 후원이다.
+        assertEquals(Kind.VIDEO, WidgetLayout.kind(first, source.copy(name = "투네이션 영상 후원", url = "https://toon.at/widget/alertbox/abc")))
+        assertEquals(Kind.VIDEO, WidgetLayout.kind(first, source.copy(name = "치지직 영도", url = "https://example.com/x")))
+        assertEquals(Kind.VIDEO, WidgetLayout.kind(first, source.copy(url = "https://example.com/widget/video/abc")))
+        assertEquals(Kind.ALERT, WidgetLayout.kind(first, source.copy(name = "투네이션 후원 알림", url = "https://example.com/x")))
+    }
+
+    @Test
+    fun videoDonationGetsA16by9SpotAtFullSize() {
+        val video = source.copy(name = "치지직 영상 후원", url = "https://example.com/v")
+        val out = WidgetLayout.arrange(OverlaySettings(sources = listOf(toonationAlert, video)))
+        assertEquals(WidgetLayout.ALERT, out.sources[0].spot())
+        assertEquals(WidgetLayout.VIDEO, out.sources[1].spot())
+        assertEquals(1f, out.sources[1].zoom, 0f)
+        // 송출 영상(16:9)에서 폭과 높이의 비율이 같으면 칸도 16:9다.
+        assertEquals(WidgetLayout.VIDEO.w, WidgetLayout.VIDEO.h, 1e-6f)
+        // 후원 알림(위 가운데)과 첫 아래쪽 칸을 가리지 않는다.
+        assertTrue(WidgetLayout.VIDEO.y >= WidgetLayout.ALERT.y + WidgetLayout.ALERT.h)
+        assertTrue(WidgetLayout.VIDEO.y + WidgetLayout.VIDEO.h <= WidgetLayout.OTHERS[0].y + 1e-6f)
     }
 
     @Test
@@ -52,6 +71,35 @@ class WidgetLayoutTest {
     }
 
     @Test
+    fun textSourcesStayWhereThePersonPutThem() {
+        val roulette = OverlaySettings.DEFAULT_TEXT.copy(text = "룰렛 있음", x = 0.4f, y = 0.7f, w = 0.5f, h = 0.2f)
+        val settings = OverlaySettings(chat = chzzkChat.copy(x = 0.7f), texts = listOf(roulette))
+        assertEquals(Kind.TEXT, WidgetLayout.kind(WidgetHost.FIRST_TEXT, roulette))
+        assertFalse(WidgetLayout.isDonation(Kind.TEXT))
+        // 자동 배치는 웹 위젯만 옮긴다: 글자는 칸 크기가 곧 글자 크기다.
+        val out = WidgetLayout.arrange(settings)
+        assertEquals(WidgetLayout.CHAT, out.chat.spot())
+        assertEquals(listOf(roulette), out.texts)
+        assertEquals(setOf(WidgetHost.CHAT), WidgetLayout.spots(settings).keys)
+        // 방송 설정을 저장해도 그대로.
+        assertEquals(listOf(roulette), WidgetLayout.placeNew(OverlaySettings(), settings, emptySet()).texts)
+    }
+
+    @Test
+    fun textSpotsAreInsideTheVideoAndClearOfTheOtherSpots() {
+        val others = listOf(WidgetLayout.CHAT, WidgetLayout.CHAT_SECOND, WidgetLayout.ALERT, WidgetLayout.VIDEO) + WidgetLayout.OTHERS
+        fun overlap(a: WidgetLayout.Spot, b: WidgetLayout.Spot) =
+            a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+        assertEquals(TextSources.MAX, WidgetLayout.TEXTS.size)
+        for ((i, s) in WidgetLayout.TEXTS.withIndex()) {
+            assertTrue(s.x >= 0f && s.y >= 0f && s.x + s.w <= 1f && s.y + s.h <= 1f)
+            assertTrue(others.none { overlap(s, it) })
+            assertTrue(WidgetLayout.TEXTS.drop(i + 1).none { overlap(s, it) })
+        }
+        assertEquals(WidgetLayout.TEXTS[0], OverlaySettings.DEFAULT_TEXT.spot())
+    }
+
+    @Test
     fun leavesEmptyWidgetsAlone() {
         val settings = OverlaySettings(chat = chzzkChat)
         val out = WidgetLayout.arrange(settings)
@@ -61,7 +109,7 @@ class WidgetLayoutTest {
 
     @Test
     fun spotsStayInsideTheVideoAndKeepTheCentreClear() {
-        val all = listOf(WidgetLayout.CHAT, WidgetLayout.CHAT_SECOND, WidgetLayout.ALERT) + WidgetLayout.OTHERS
+        val all = listOf(WidgetLayout.CHAT, WidgetLayout.CHAT_SECOND, WidgetLayout.ALERT, WidgetLayout.VIDEO) + WidgetLayout.OTHERS
         for (s in all) {
             assertTrue(s.x >= 0f && s.y >= 0f && s.x + s.w <= 1f && s.y + s.h <= 1f)
         }
@@ -108,5 +156,29 @@ class WidgetLayoutTest {
         val back = WidgetLayout.restore(renamed, before)
         assertEquals(before.chat, back.chat)
         assertEquals(before.sources[0].copy(name = "새 이름"), back.sources[0])
+    }
+
+    @Test
+    fun donationWidgetsAreAlertsAndVideoDonations() {
+        assertTrue(WidgetLayout.isDonation(WidgetLayout.Kind.ALERT))
+        assertTrue(WidgetLayout.isDonation(WidgetLayout.Kind.VIDEO))
+        assertFalse(WidgetLayout.isDonation(WidgetLayout.Kind.CHAT))
+        assertFalse(WidgetLayout.isDonation(WidgetLayout.Kind.OTHER))
+        // 이름으로 알아본다: 설정의 "+ 투네이션 영상 후원", "+ 치지직 영상 후원" 버튼이 붙이는 이름
+        val toonationVideo = OverlayItem(x = 0f, y = 0f, w = 0.3f, h = 0.3f, url = "https://toon.at/widget/x", name = "투네이션 영상 후원")
+        val chzzkVideo = OverlayItem(x = 0f, y = 0f, w = 0.3f, h = 0.3f, url = "https://chzzk.naver.com/x", name = "치지직 영상 후원")
+        val goal = OverlayItem(x = 0f, y = 0f, w = 0.3f, h = 0.3f, url = "https://example.com/goal", name = "목표")
+        assertTrue(WidgetLayout.isDonation(WidgetLayout.kind(WidgetHost.FIRST_SOURCE, toonationVideo)))
+        assertTrue(WidgetLayout.isDonation(WidgetLayout.kind(WidgetHost.FIRST_SOURCE + 1, chzzkVideo)))
+        assertFalse(WidgetLayout.isDonation(WidgetLayout.kind(WidgetHost.FIRST_SOURCE + 2, goal)))
+    }
+
+    @Test
+    fun chzzkVideoDonationIsTimedByTheServer() {
+        assertTrue(WidgetLayout.isServerTimed("https://chzzk.naver.com/video-donation/abc123"))
+        assertTrue(WidgetLayout.isServerTimed("https://CHZZK.naver.com/Video-Donation/abc123?x=1"))
+        assertFalse(WidgetLayout.isServerTimed("https://chzzk.naver.com/donation/abc123"))
+        assertFalse(WidgetLayout.isServerTimed("https://toon.at/widget/alertbox/abc"))
+        assertFalse(WidgetLayout.isServerTimed(""))
     }
 }

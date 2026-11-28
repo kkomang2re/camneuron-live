@@ -12,10 +12,14 @@ import com.camneuron.core.overlay.OverlaySettings
  *   폰의 상태 글자 아래, 줌 버튼 위에서 끝난다. 두 번째 채팅(투네이션 채팅 등)은 오른쪽 세로 칸.
  * - 후원 알림(룰렛 포함): 위 가운데. 잠깐 떴다 사라지므로 여러 개가 한 자리를 같이 써도 된다.
  *   OBS용 알림(보통 800x600)이 잘리지 않고 얼굴을 덜 가리게 내용을 70%로 줄인다.
+ * - 영상 후원: 오른쪽 가운데의 16:9 칸. 영상이 도는 동안 후원 알림을 가리지 않게 알림 아래, 아래쪽 칸 위에 둔다.
+ *   내용은 줄이지 않는다.
  * - 그 밖(목표 막대 등): 아래쪽, 채팅 칸을 피해 오른쪽부터 차례로.
+ * - 글자 소스("룰렛 있음" 같은 문구): 위쪽 양 모서리. 새로 넣을 때만 여기에 놓고, 그 뒤로는 사람이 놓은 자리와 크기를
+ *   그대로 둔다 ("자동 배치"도 건드리지 않는다: 칸 크기가 곧 글자 크기라서).
  */
 object WidgetLayout {
-    enum class Kind { CHAT, ALERT, OTHER }
+    enum class Kind { CHAT, ALERT, VIDEO, OTHER, TEXT }
 
     /** 위젯 하나의 자리와 내용 배율. */
     data class Spot(val x: Float, val y: Float, val w: Float, val h: Float, val zoom: Float = 1f)
@@ -23,6 +27,7 @@ object WidgetLayout {
     val CHAT = Spot(x = 0.02f, y = 0.30f, w = 0.24f, h = 0.55f)
     val CHAT_SECOND = Spot(x = 0.74f, y = 0.30f, w = 0.24f, h = 0.48f)
     val ALERT = Spot(x = 0.28f, y = 0.03f, w = 0.44f, h = 0.40f, zoom = 0.7f)
+    val VIDEO = Spot(x = 0.62f, y = 0.44f, w = 0.36f, h = 0.36f)
     val OTHERS = listOf(
         Spot(x = 0.64f, y = 0.80f, w = 0.34f, h = 0.17f),
         Spot(x = 0.28f, y = 0.80f, w = 0.34f, h = 0.17f),
@@ -30,26 +35,47 @@ object WidgetLayout {
         Spot(x = 0.28f, y = 0.62f, w = 0.34f, h = 0.17f),
     )
 
+    /** 새 글자 소스의 자리: 왼쪽 위, 오른쪽 위, 왼쪽 위의 아래. */
+    val TEXTS = listOf(
+        Spot(x = 0.02f, y = 0.04f, w = 0.24f, h = 0.10f),
+        Spot(x = 0.74f, y = 0.04f, w = 0.24f, h = 0.10f),
+        Spot(x = 0.02f, y = 0.16f, w = 0.24f, h = 0.10f),
+    )
+
+    /** "영상 후원"에는 "후원"도 들어 있으므로 영상인지를 먼저 본다. */
+    private val VIDEO_WORDS = listOf("video", "영상", "영도")
     private val ALERT_WORDS = listOf("alert", "donation", "donate", "roulette", "후원", "알림", "도네", "룰렛")
     private val CHAT_WORDS = listOf("chat", "채팅")
+
+    /** 후원이 차례로 나오는 위젯인지 (후원 알림, 영상 후원). 재생 중인 것을 넘기는 대상이다. */
+    fun isDonation(kind: Kind): Boolean = kind == Kind.ALERT || kind == Kind.VIDEO
+
+    /**
+     * 후원의 재생 시간을 위젯 페이지가 아니라 서버가 재는 위젯인지. 치지직 영상 후원(chzzk.naver.com/video-donation/…)이 그렇다:
+     * 페이지의 시계를 감아도 넘어가지 않았고, 영상을 끝으로 넘기면 처음부터 다시 재생됐다 (폰에서 확인).
+     * 이런 위젯은 넘길 때 가리고 소리만 끈 채 서버가 다음 후원을 보내기를 기다린다.
+     */
+    fun isServerTimed(url: String): Boolean = "chzzk.naver.com/video-donation" in url.lowercase()
 
     /** 칸이 어떤 위젯인지. 브라우저 소스는 이름을 먼저, 없으면 주소를 본다 (예: toon.at/widget/alertbox → 후원 알림). */
     fun kind(index: Int, item: OverlayItem): Kind = when (index) {
         WidgetHost.CHAT -> Kind.CHAT
         WidgetHost.ALERT -> Kind.ALERT
+        in WidgetHost.FIRST_TEXT until WidgetHost.COUNT -> Kind.TEXT
         else -> guess(item.name) ?: guess(item.url) ?: Kind.OTHER
     }
 
     private fun guess(text: String): Kind? {
         val t = text.lowercase()
         return when {
+            VIDEO_WORDS.any { it in t } -> Kind.VIDEO
             ALERT_WORDS.any { it in t } -> Kind.ALERT
             CHAT_WORDS.any { it in t } -> Kind.CHAT
             else -> null
         }
     }
 
-    /** 주소가 있는 칸마다의 알맞은 자리 (칸 번호 → 자리). 같은 종류는 칸 번호 순서로 자리를 받는다. */
+    /** 주소가 있는 칸마다의 알맞은 자리 (칸 번호 → 자리). 같은 종류는 칸 번호 순서로 자리를 받는다. 글자 소스는 빠진다. */
     fun spots(settings: OverlaySettings): Map<Int, Spot> {
         var chats = 0
         var others = 0
@@ -59,7 +85,9 @@ object WidgetLayout {
             result[index] = when (kind(index, item)) {
                 Kind.CHAT -> if (chats++ == 0) CHAT else CHAT_SECOND
                 Kind.ALERT -> ALERT
+                Kind.VIDEO -> VIDEO
                 Kind.OTHER -> OTHERS[others++ % OTHERS.size]
+                Kind.TEXT -> return@forEachIndexed
             }
         }
         return result

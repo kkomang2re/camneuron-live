@@ -51,6 +51,19 @@ data class CameraControls(
         torch = torch && caps.torch,
         stabilization = stabilization && caps.stabilization,
     )
+
+    /**
+     * 전면/후면을 바꾼 직후의 값 ([caps]는 새로 연 카메라). 후면으로 바꿨으면 줌을 [REAR_ZOOM](1×)로 되돌리고 손떨림 보정을
+     * 켠다: 전면에서 맞춘 줌이 후면에 그대로 넘어오고, 전면 카메라는 손떨림 보정이 없어 한 번 다녀오면 꺼진 채로 남아서
+     * 바꿀 때마다 손으로 다시 맞춰야 했다. 전면으로 바꿀 때는 지원 범위로만 맞춘다.
+     */
+    fun switchedTo(caps: CameraCaps): CameraControls =
+        (if (caps.front) this else copy(zoom = REAR_ZOOM, stabilization = true)).clampedTo(caps)
+
+    companion object {
+        /** 후면 카메라로 바꿨을 때의 줌. */
+        const val REAR_ZOOM = 1f
+    }
 }
 
 /** 지금 열린 카메라가 지원하는 범위. */
@@ -70,3 +83,10 @@ data class CameraCaps(
 )
 
 data class StreamFormat(val width: Int, val height: Int, val fps: Int)
+
+/**
+ * 프레임 하나를 내는 데 [minFrameDurationNs]가 걸리는 크기로 낼 수 있는 가장 높은 fps (33,333,333ns → 30).
+ * 카메라가 값을 알려 주지 않으면(0 이하) [fallback].
+ */
+fun maxFpsForFrameDuration(minFrameDurationNs: Long, fallback: Int): Int =
+    if (minFrameDurationNs <= 0) fallback else ((1_000_000_000L + minFrameDurationNs / 2) / minFrameDurationNs).toInt().coerceAtLeast(1)

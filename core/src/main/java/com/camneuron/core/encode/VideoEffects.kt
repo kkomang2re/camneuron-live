@@ -24,6 +24,7 @@ import java.nio.FloatBuffer
 import java.util.Locale
 import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReferenceArray
 import kotlin.math.PI
 import kotlin.math.ceil
 import kotlin.math.cos
@@ -66,6 +67,9 @@ class VideoEffects(
 
     // 위에 얹는 그림 층 (야외 방송의 채팅창·후원 알림). GL 스레드에서만 쓴다.
     private val layers = arrayOfNulls<Layer>(MAX_LAYERS)
+
+    /** 층마다 아직 올리지 않은 가장 새 그림 ([setLayer]). 아무 스레드에서나 넣고 GL 스레드가 꺼낸다. */
+    private val pendingLayers = AtomicReferenceArray<PendingLayer?>(MAX_LAYERS)
     private var layerProgram = 0
     private var layerAlphaLoc = -1
 
@@ -145,41 +149,82 @@ class VideoEffects(
     /**
      * [index]번 층에 [bitmap]을 영상 좌표 0~1의 사각형([left]~[right], [top]~[bottom])으로 얹는다. [alpha]는 0~1.
      * 카메라(또는 가리기 그림) 위, 워터마크 아래에 번호 순서대로 그린다. [bitmap]이 null이면 그 층을 지운다.
-     * [bitmap]은 알파를 미리 곱한 ARGB_8888이어야 하며, 이 함수가 맡아 올린 뒤 recycle한다.
+     * [bitmap]은 알파를 미리 곱한 ARGB_8888이어야 한다. [owned]면 이 함수가 맡아 다 쓰면 recycle하고, 아니면 부른 쪽이
+     * 계속 갖고 있되 바꾸지 않아야 한다 (GPU 스레드가 나중에 읽는다).
+     *
+     * 층마다 아직 올리지 않은 가장 새 그림 하나만 맡아 둔다. GPU 스레드가 밀려 있는 동안 새 그림이 오면 옛 그림은
+     * 올리지 않고 버린다. 예전에는 그림마다 일을 줄 세워, 오래 방송해 폰이 뜨거워지고 GPU가 느려지면 줄이 끝없이 길어졌다
+     * (그림마다 수 MB를 쥔 채로). 그만큼 카메라 프레임을 그릴 차례가 밀려 프레임이 떨어졌다.
      */
-    fun setLayer(index: Int, bitmap: Bitmap?, left: Float, top: Float, right: Float, bottom: Float, alpha: Float) {
+    fun setLayer(
+        index: Int,
+        bitmap: Bitmap?,
+        left: Float,
+        top: Float,
+        right: Float,
+        bottom: Float,
+        alpha: Float,
+        owned: Boolean = true,
+    ) {
         require(index in 0 until MAX_LAYERS) { "layer $index" }
-        val posted = handler.post {
-            try {
-                val current = layers[index]
-                if (bitmap == null) {
-                    if (current != null) GLES20.glDeleteTextures(1, intArrayOf(current.tex), 0)
-                    layers[index] = null
-                    return@post
-                }
-                if (layerProgram == 0) {
-                    layerProgram = program(FRAGMENT_LAYER)
-                    layerAlphaLoc = GLES20.glGetUniformLocation(layerProgram, "uAlpha")
-                }
-                val quad = quad(left * width, top * height, right * width, bottom * height)
-                if (current != null && current.width == bitmap.width && current.height == bitmap.height) {
-                    GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, current.tex)
-                    GLUtils.texSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, bitmap)
-                    current.quad = quad
-                    current.alpha = alpha
-                } else {
-                    val tex = current?.tex ?: newTexture(GLES20.GL_TEXTURE_2D)
-                    GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex)
-                    GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
-                    layers[index] = Layer(tex, bitmap.width, bitmap.height, quad, alpha)
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "failed to set layer $index", e)
-            } finally {
-                bitmap?.recycle()
-            }
+        val previous = pendingLayers.getAndSet(index, PendingLayer(bitmap, owned, left, top, right, bottom, alpha))
+        if (previous != null) {
+            // 이미 맡긴 일이 아직 돌지 않았다. 그 일이 방금 넣은 새 그림을 꺼내 올린다.
+            previous.dispose()
+            return
         }
-        if (!posted) bitmap?.recycle() // 이미 해제됨
+        if (!handler.post { applyLayer(index) }) pendingLayers.getAndSet(index, null)?.dispose() // 이미 해제됨
+    }
+
+    /** 아직 GPU에 올리지 않은 층 그림. */
+    private class PendingLayer(
+        val bitmap: Bitmap?,
+        val owned: Boolean,
+        val left: Float,
+        val top: Float,
+        val right: Float,
+        val bottom: Float,
+        val alpha: Float,
+    ) {
+        fun dispose() {
+            if (owned) bitmap?.recycle()
+        }
+    }
+
+    /** GL 스레드에서. [index]번 층의 가장 새 그림을 올린다. */
+    private fun applyLayer(index: Int) {
+        val next = pendingLayers.getAndSet(index, null) ?: return
+        val bitmap = next.bitmap
+        try {
+            if (context == EGL14.EGL_NO_CONTEXT) return // 이미 정리함
+            val current = layers[index]
+            if (bitmap == null) {
+                if (current != null) GLES20.glDeleteTextures(1, intArrayOf(current.tex), 0)
+                layers[index] = null
+                return
+            }
+            if (bitmap.isRecycled) return
+            if (layerProgram == 0) {
+                layerProgram = program(FRAGMENT_LAYER)
+                layerAlphaLoc = GLES20.glGetUniformLocation(layerProgram, "uAlpha")
+            }
+            val quad = quad(next.left * width, next.top * height, next.right * width, next.bottom * height)
+            if (current != null && current.width == bitmap.width && current.height == bitmap.height) {
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, current.tex)
+                GLUtils.texSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, bitmap)
+                current.quad = quad
+                current.alpha = next.alpha
+            } else {
+                val tex = current?.tex ?: newTexture(GLES20.GL_TEXTURE_2D)
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex)
+                GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
+                layers[index] = Layer(tex, bitmap.width, bitmap.height, quad, next.alpha)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "failed to set layer $index", e)
+        } finally {
+            next.dispose()
+        }
     }
 
     /** 그리기를 멈추고 GPU 자원을 놓는다. 인코더를 해제하기 전에 부른다. */
@@ -321,6 +366,7 @@ class VideoEffects(
     }
 
     private fun tearDown() {
+        for (i in 0 until MAX_LAYERS) pendingLayers.getAndSet(i, null)?.dispose()
         texture?.setOnFrameAvailableListener(null)
         cameraSurface?.release()
         texture?.release()
@@ -542,7 +588,8 @@ class VideoEffects(
             }
         """
 
-        const val MAX_LAYERS = 8
+        /** 영상 위에 얹는 그림 층 수: 웹 위젯 6칸과 글자 소스 3칸, 그리고 여유. */
+        const val MAX_LAYERS = 12
 
         /** 알파를 미리 곱한 그림을 [uAlpha]만큼 투명하게. */
         private const val FRAGMENT_LAYER = PRECISION + """

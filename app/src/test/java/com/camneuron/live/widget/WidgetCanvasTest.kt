@@ -29,4 +29,19 @@ class WidgetCanvasTest {
         assertFalse(WidgetCanvas.streamed(base.copy(url = "https://example.com/chat")))
         assertTrue(WidgetCanvas.streamed(base.copy(url = "https://example.com/chat", stream = true)))
     }
+
+    @Test
+    fun aWidgetSwitchedOffIsNotStreamed() {
+        val chat = OverlayItem(url = "https://example.com/chat", stream = true, x = 0f, y = 0f, w = 0.5f, h = 0.5f)
+        assertTrue(chat.on)
+        val off = chat.copy(visible = false)
+        assertTrue(off.active) // 주소와 자리는 남아 있다
+        assertFalse(off.on)
+        assertFalse(WidgetCanvas.streamed(off))
+        // 글자 소스도 마찬가지.
+        val text = OverlaySettings.DEFAULT_TEXT.copy(text = "룰렛 있음")
+        assertTrue(WidgetCanvas.streamed(text))
+        assertFalse(WidgetCanvas.streamed(text.copy(visible = false)))
+        assertFalse(OverlaySettings.DEFAULT_TEXT.on) // 문구가 없으면 켜져 있어도 쓰는 칸이 아니다
+    }
 }

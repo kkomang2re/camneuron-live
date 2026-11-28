@@ -17,7 +17,18 @@ import com.camneuron.core.device.HeatGovernor
  * 약한 방에 머무는 동안 올렸다 멈췄다를 되풀이하지 않게.
  * 송출 서버 하나가 계속 들고 있어, 끊겼다 다시 연결돼도 [STALE_MS] 안이면 낮춘 단계로 시작한다.
  */
-class NetGovernor {
+class NetGovernor(
+    /**
+     * 가장 낮출 단계. 해상도를 바꾸지 않는 쪽(야외 방송)은 3으로 둔다: 거기서는 4단계의 비트레이트가 3단계와 같아
+     * 얻는 것 없이 되돌아오는 데만 [RECOVER_RESIZE_MS]가 더 걸린다.
+     */
+    private val maxLevel: Int = MAX_LEVEL,
+    /**
+     * 잘 보내지는 상태가 이만큼 이어질 때마다 한 단계씩 되돌린다. 올리자마자 다시 밀리면 두 배씩 더 기다리는 것은 같다.
+     * 모바일 데이터는 Wi-Fi보다 빨리 오르내리므로 야외 방송은 더 짧게 둔다.
+     */
+    private val baseRecoverMs: Long = RECOVER_MS,
+) {
     @Volatile
     var level = 0
         private set
@@ -26,7 +37,7 @@ class NetGovernor {
     private var slowSeconds = 0
     private var lastUpdateMs = NONE
     private var lastUpMs = NONE
-    private var recoverMs = RECOVER_MS
+    private var recoverMs = baseRecoverMs
 
     /**
      * 1초마다 부른다. [drops]는 그동안 쌓인 프레임을 버린 횟수, [queueFill]은 대기열이 가장 찼을 때의 비율(1이면 버리기 직전).
@@ -44,7 +55,7 @@ class NetGovernor {
             goodSinceMs = NONE
             if (lastUpMs != NONE && nowMs - lastUpMs <= PROBE_FAIL_MS) recoverMs = minOf(recoverMs * 2, MAX_RECOVER_MS)
             lastUpMs = NONE
-            if (level < MAX_LEVEL && (lastDownMs == NONE || nowMs - lastDownMs >= DOWN_INTERVAL_MS)) {
+            if (level < maxLevel && (lastDownMs == NONE || nowMs - lastDownMs >= DOWN_INTERVAL_MS)) {
                 level++
                 lastDownMs = nowMs
                 slowSeconds = 0
@@ -54,7 +65,7 @@ class NetGovernor {
         }
         // 올린 단계가 한동안 버티면 다시 짧게 기다려도 된다.
         if (lastUpMs != NONE && nowMs - lastUpMs >= PROBE_OK_MS) {
-            recoverMs = RECOVER_MS
+            recoverMs = baseRecoverMs
             lastUpMs = NONE
         }
         if (level == 0 || queueFill >= GOOD_FILL) {
@@ -80,7 +91,7 @@ class NetGovernor {
         goodSinceMs = NONE
         slowSeconds = 0
         lastUpMs = NONE
-        recoverMs = RECOVER_MS
+        recoverMs = baseRecoverMs
         return changed
     }
 

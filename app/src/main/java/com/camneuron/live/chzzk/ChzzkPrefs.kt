@@ -16,7 +16,9 @@ object ChzzkPrefs {
     private const val KEY_REFRESH = "refresh_token"
     private const val KEY_EXPIRES = "expires_at"
     private const val KEY_CHANNEL = "channel_name"
+    private const val KEY_CHANNEL_ID = "channel_id"
     private const val KEY_READ_ALOUD = "read_aloud"
+    private const val KEY_READ_CHAT = "read_chat"
 
     fun clientId(context: Context): String = prefs(context).getString(KEY_CLIENT_ID, null).orEmpty()
 
@@ -37,7 +39,7 @@ object ChzzkPrefs {
             .putString(KEY_CLIENT_ID, id)
             .putString(KEY_CLIENT_SECRET, secret)
             .putString(KEY_REDIRECT, redirectUri.trim())
-        if (changed) edit.remove(KEY_ACCESS).remove(KEY_REFRESH).remove(KEY_EXPIRES).remove(KEY_CHANNEL)
+        if (changed) edit.remove(KEY_ACCESS).remove(KEY_REFRESH).remove(KEY_EXPIRES).remove(KEY_CHANNEL).remove(KEY_CHANNEL_ID)
         edit.apply()
     }
 
@@ -47,11 +49,25 @@ object ChzzkPrefs {
         prefs(context).edit().putString(KEY_CHANNEL, name.orEmpty()).apply()
     }
 
+    /** 내 채널 ID (시청자 수를 읽는 데 쓴다). 로그인할 때 받고, 없으면 화면이 한 번 받아 둔다. 비밀은 아니다. */
+    fun channelId(context: Context): String = prefs(context).getString(KEY_CHANNEL_ID, null).orEmpty()
+
+    fun setChannelId(context: Context, id: String?) {
+        prefs(context).edit().putString(KEY_CHANNEL_ID, id.orEmpty()).apply()
+    }
+
     /** 후원·구독을 소리 내어 읽어 줄지. 기본은 켬. */
     fun readAloud(context: Context): Boolean = prefs(context).getBoolean(KEY_READ_ALOUD, true)
 
     fun setReadAloud(context: Context, on: Boolean) {
         prefs(context).edit().putBoolean(KEY_READ_ALOUD, on).apply()
+    }
+
+    /** 채팅도 소리 내어 읽어 줄지 (걸으면서 방송할 때). 기본은 끔. */
+    fun readChat(context: Context): Boolean = prefs(context).getBoolean(KEY_READ_CHAT, false)
+
+    fun setReadChat(context: Context, on: Boolean) {
+        prefs(context).edit().putBoolean(KEY_READ_CHAT, on).apply()
     }
 
     fun loggedIn(context: Context): Boolean = TokenStore(context).tokens != null
@@ -75,7 +91,7 @@ object ChzzkPrefs {
         private fun write(value: ChzzkTokens?) {
             val edit = p.edit()
             if (value == null) {
-                edit.remove(KEY_ACCESS).remove(KEY_REFRESH).remove(KEY_EXPIRES).remove(KEY_CHANNEL)
+                edit.remove(KEY_ACCESS).remove(KEY_REFRESH).remove(KEY_EXPIRES).remove(KEY_CHANNEL).remove(KEY_CHANNEL_ID)
             } else {
                 edit.putString(KEY_ACCESS, value.accessToken)
                     .putString(KEY_REFRESH, value.refreshToken)

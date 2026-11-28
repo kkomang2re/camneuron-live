@@ -3,7 +3,6 @@ package com.camneuron.live
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -17,8 +16,10 @@ import com.camneuron.core.encode.BeautySettings
 import com.camneuron.core.encode.BeautyStore
 import com.camneuron.core.encode.Codecs
 import com.camneuron.core.encode.VideoEncoder
-import com.camneuron.core.net.NetGovernor
 import com.camneuron.live.chzzk.ChzzkChat
+import com.camneuron.live.chzzk.ChzzkLiveStatus
+import com.camneuron.live.chzzk.ChzzkPrefs
+import com.camneuron.live.chzzk.UrlConnectionTransport
 import com.camneuron.live.rtmp.Flv
 import com.camneuron.live.rtmp.RtmpException
 import com.camneuron.live.rtmp.RtmpPublisher
@@ -27,16 +28,17 @@ import com.camneuron.live.rtmp.RtmpUrl
 import com.camneuron.live.widget.WidgetCanvas
 import com.camneuron.live.widget.WidgetHost
 import java.nio.ByteBuffer
-import kotlin.math.abs
 
 /**
  * 폰 카메라와 마이크를 RTMP 서버(치지직)로 바로 보낸다. 방송 하나에 하나, 자기 스레드에서 돈다.
  *
  * 연결이 끊기면 [RETRY_MS]마다 다시 붙는다 (야외에서는 모바일 데이터가 잠깐씩 끊긴다). 단, 처음 연결부터 실패하면
  * 주소나 스트림 키가 틀렸을 가능성이 크므로 다시 시도하지 않고 멈춘다 ([onEnded]에 이유).
- * 카메라를 바꾸거나 미리보기가 붙고 떨어지면 연결은 유지하고 인코더만 새로 만든다 (새 시퀀스 헤더를 보낸다).
- * 발열([HeatGovernor])과 네트워크([NetGovernor])에 따라 비트레이트만 [quality]보다 낮춘다. 방송 중에 해상도를 바꾸면
- * 시청자 플레이어가 멈추는 경우가 있어 아직은 바꾸지 않는다.
+ * 카메라를 바꾸거나 미리보기가 붙고 떨어지면 연결은 유지하고 인코더만 새로 만든다. 영상 크기는 처음 정한 대로 지키고,
+ * 영상 시각은 인코더마다 다시 맞춘다 ([VideoClock]). 카메라를 바꾸지 못하면 이전 카메라로 돌아가 방송을 잇는다.
+ * 네트워크가 약하면 ([UploadGovernor]) 비트레이트를 [quality]보다 낮춘다. 폰이 뜨거우면([HeatGovernor]) 처리량을 먼저
+ * 줄인다 (60fps면 30fps로, 위젯 그림 뜨기를 드물게, 가장 뜨거울 때만 비트레이트를 조금. [LiveHeat]).
+ * 방송 중에 해상도를 바꾸면 시청자 플레이어가 멈추는 경우가 있어 해상도는 바꾸지 않는다.
  * 마이크 끄기와 화면 가리기는 [LiveControls]를 따라 지금 인코더에 바로 적용한다.
  */
 class LiveSession(
@@ -49,6 +51,9 @@ class LiveSession(
 ) : CameraEngine.Listener, CameraEngine.FacingHandler, AudioEncoder.Sink {
     private val thread = Thread(::run, "live-session")
     private val ticker = Thread(::tickLoop, "live-ticker")
+
+    /** 치지직에 방송이 떴는지와 시청자 수를 [WATCH_MS]마다 읽는다 (네트워크가 느려도 1초 틱을 막지 않게 따로 돈다). */
+    private val watcher = Thread(::watchLoop, "live-viewers").apply { isDaemon = true }
     private val lock = Object()
 
     @Volatile
@@ -90,24 +95,47 @@ class LiveSession(
     private val audioLock = Any()
     private var audio: AudioEncoder? = null // audioLock
 
-    /** 영상 pts가 BOOTTIME 시계인지 (기기마다 다르다). 첫 프레임에서 정한다. 소리 pts(MONOTONIC)를 맞출 때 쓴다. */
+    /** 영상 시각을 소리와 같은 시계로 옮긴다. 세션 스레드 전용 (인코더 출력을 꺼내는 스레드). */
+    private val videoClock = VideoClock()
+
+    /** 이 방송의 영상 크기. 처음 정한 뒤에는 카메라를 바꿔도 지킨다 (방송 중에 크기가 바뀌면 시청자 플레이어가 멈춘다). 세션 스레드 전용. */
+    private var streamSize: StreamFormat? = null
+
+    /** 지금 인코더가 붙어 있는 카메라가 전면인지 (세션 스레드 전용). 카메라를 바꾸다 실패하면 이쪽으로 돌아간다. */
+    private var attachedFront: Boolean? = null
+
+    /** [LiveState.Status.cameraError]를 지울 시각 (SystemClock.elapsedRealtime). 0이면 보이는 것이 없다. */
     @Volatile
-    private var videoClockIsBoottime: Boolean? = null
+    private var cameraErrorUntilMs = 0L
 
     private val heat = HeatGovernor()
-    private val net = NetGovernor()
+
+    private val net = LiveNet.governor()
 
     @Volatile
     private var targetBitrate = quality.bitrate
+
+    /** 지금 인코더에 요청한 프레임 수 (발열 단계에 따라 [quality]보다 낮을 수 있다). */
+    @Volatile
+    private var encoderFps = quality.fps
+
+    /** 세션이 끝나 위젯 설정을 되돌렸다. 그 뒤에 늦게 온 틱이 위젯을 다시 느리게 하지 않게. */
+    @Volatile
+    private var ended = false
 
     private val encoderFailures = ArrayDeque<Long>()
     private var lastBytesSent = 0L
     private var lastTickMs = 0L
 
+    /** 지금 연결에 정해 둔 소켓 송신 버퍼 크기 ([LiveNet.sendBuffer]). */
+    @Volatile
+    private var sendBufferBytes = 0
+
     fun start() {
         LiveState.update { LiveState.Status(phase = LiveState.Phase.CONNECTING, startedAtMs = SystemClock.elapsedRealtime()) }
         thread.start()
         ticker.start()
+        watcher.start()
     }
 
     fun stop() {
@@ -117,6 +145,7 @@ class LiveSession(
         streamer?.stop()
         if (thread !== Thread.currentThread()) thread.join(5000)
         ticker.interrupt()
+        watcher.interrupt()
     }
 
     private fun run() {
@@ -136,7 +165,8 @@ class LiveSession(
         try {
             while (!stopped) {
                 connectionLost = null
-                val publisher = RtmpPublisher(url, streamKey) { Log.i(TAG, it) }
+                val bufferBytes = RtmpPublisher.sendBufferFor(targetBitrate + LiveNet.AUDIO_BPS)
+                val publisher = RtmpPublisher(url, streamKey, bufferBytes) { Log.i(TAG, it) }
                 var active: RtmpStreamer? = null
                 try {
                     connecting = publisher
@@ -145,13 +175,15 @@ class LiveSession(
                     connecting = null
                     active = RtmpStreamer(
                         publisher,
-                        queueBytes = quality.bitrate / 8 * QUEUE_SECONDS,
+                        queueBytes = quality.bitrate / 8 * LiveNet.QUEUE_SECONDS,
+                        maxDelayMs = LiveNet.QUEUE_SECONDS * 1000L,
                         onNeedKeyFrame = { encoder?.requestKeyFrame() },
                         onFailed = { lose(it) },
                         log = { Log.i(TAG, it) },
                     )
                     streamer = active
                     lastBytesSent = 0L
+                    sendBufferBytes = bufferBytes
                     active.start()
                     everLive = true
                     LiveState.update { it.copy(phase = LiveState.Phase.LIVE, message = null) }
@@ -190,8 +222,10 @@ class LiveSession(
         } finally {
             LiveControls.removeListener(controlsListener)
             BeautyStore.removeListener(beautyListener)
+            ended = true
             main.post {
                 WidgetHost.removeListener(widgetListener)
+                WidgetHost.slowdown = 1f
                 WidgetHost.release()
                 ChzzkChat.release()
             }
@@ -208,24 +242,28 @@ class LiveSession(
         while (!stopped && connectionLost == null) {
             restartRequested = false
             val useFront = front
-            val mime = VideoEncoder.MIME_AVC
-            val supports = { w: Int, h: Int -> VideoEncoder.findEncoder(mime, w, h) != null }
-            val format = engine.resolveFormat(useFront, quality.width, quality.height, quality.fps, supports)
-            val name = VideoEncoder.findEncoder(mime, format.width, format.height)
-                ?: error("H.264 인코더 없음 (${format.width}x${format.height})")
-            val next = VideoEncoder(
-                name, mime, format.width, format.height, format.fps, targetBitrate,
-                constantBitrate = true, keyFrameIntervalS = quality.keyFrameS,
-            )
-            try {
-                engine.attachEncoder(next.inputSurface, format, useFront)
+            val opened = try {
+                openEncoder(useFront)
             } catch (e: Exception) {
-                next.release()
-                throw e
+                // 카메라를 바꾸다 실패했다 (그 카메라를 열지 못하거나, 방송 크기로 찍지 못하는 폰). 연결을 끊고 다시 붙는 대신
+                // 이전 카메라로 돌아가 방송을 잇는다. 돌아가는 것도 실패하면 그때는 예전처럼 끊고 다시 연결한다.
+                val previous = attachedFront
+                if (stopped || connectionLost != null || previous == null || previous == useFront) throw e
+                Log.w(TAG, "camera switch failed, going back to the previous camera", e)
+                attachedFront = null
+                front = previous
+                cameraErrorUntilMs = SystemClock.elapsedRealtime() + CAMERA_ERROR_SHOW_MS
+                LiveState.update { it.copy(cameraError = e.message ?: e.javaClass.simpleName) }
+                continue
             }
+            val next = opened.first
+            val format = opened.second
             encoder?.release()
             encoder = next
             encoderFormat = format
+            attachedFront = useFront
+            if (streamSize == null) streamSize = format
+            videoClock.reset() // 카메라가 바뀌었으면 프레임에 찍히는 시각의 기준도 바뀌었을 수 있다
             applyCover(next, format)
             next.setBeauty(BeautyStore.current)
             // 새 인코더에는 위젯 층이 없다. 지금 그림을 다시 얹는다.
@@ -262,19 +300,59 @@ class LiveSession(
         }
     }
 
+    /**
+     * [useFront] 카메라에 붙은 새 인코더를 만든다. 이전 인코더는 그때까지 카메라에 붙어 있다 (부른 쪽이 그 뒤에 해제한다).
+     * 실패하면 예외를 던진다. 그때 이전 인코더는 더 이상 카메라에서 프레임을 받지 못할 수 있다.
+     */
+    private fun openEncoder(useFront: Boolean): Pair<VideoEncoder, StreamFormat> {
+        val mime = VideoEncoder.MIME_AVC
+        val supports = { w: Int, h: Int -> VideoEncoder.findEncoder(mime, w, h) != null }
+        val fps = LiveHeat.fps(quality.fps, heat.level)
+        encoderFps = fps
+        val size = streamSize
+        val format = if (size == null) {
+            engine.resolveFormat(useFront, quality.width, quality.height, fps, supports)
+        } else {
+            engine.resolveFormat(useFront, size.width, size.height, fps, supports, keepSize = true)
+        }
+        val name = VideoEncoder.findEncoder(mime, format.width, format.height)
+            ?: error("H.264 인코더 없음 (${format.width}x${format.height})")
+        val create = {
+            VideoEncoder(
+                name, mime, format.width, format.height, format.fps, targetBitrate,
+                constantBitrate = true, keyFrameIntervalS = quality.keyFrameS,
+            )
+        }
+        val next = try {
+            create()
+        } catch (e: Exception) {
+            // 같은 크기의 하드웨어 인코더를 둘 띄우지 못하는 폰이 있다. 이전 것을 먼저 놓고 다시 만든다
+            // (그동안 영상이 조금 더 길게 빈다).
+            val old = encoder ?: throw e
+            Log.w(TAG, "could not create a second encoder, releasing the old one first", e)
+            runCatching { engine.detachEncoder() }
+            old.release()
+            encoder = null
+            encoderFormat = null
+            create()
+        }
+        try {
+            engine.attachEncoder(next.inputSurface, format, useFront)
+        } catch (e: Exception) {
+            next.release()
+            throw e
+        }
+        return next to format
+    }
+
     private fun onVideo(active: RtmpStreamer, config: Boolean, keyFrame: Boolean, ptsUs: Long, data: ByteBuffer) {
         val bytes = ByteArray(data.remaining()).also { data.get(it) }
         if (config) {
             active.onVideoConfig(bytes)
             return
         }
-        if (videoClockIsBoottime == null) {
-            val boottime = SystemClock.elapsedRealtimeNanos() / 1000
-            val monotonic = System.nanoTime() / 1000
-            videoClockIsBoottime = abs(boottime - ptsUs) < abs(monotonic - ptsUs)
-            Log.i(TAG, "video pts clock: ${if (videoClockIsBoottime == true) "BOOTTIME" else "MONOTONIC"}")
-        }
-        active.onVideoFrame(ptsUs, bytes, keyFrame)
+        val pts = videoClock.toMonotonic(ptsUs, System.nanoTime() / 1000, SystemClock.elapsedRealtimeNanos() / 1000)
+        active.onVideoFrame(pts, bytes, keyFrame)
     }
 
     private fun lose(reason: String) {
@@ -293,11 +371,13 @@ class LiveSession(
                 it.muted = LiveControls.audioMuted
                 it.start()
             }
+            AudioMeter.active = true
         }
     }
 
     private fun stopAudio() {
         val stopping = synchronized(audioLock) { audio.also { audio = null } }
+        AudioMeter.active = false
         stopping?.stop()
     }
 
@@ -306,19 +386,18 @@ class LiveSession(
     }
 
     override fun onAudioPacket(ptsUs: Long, data: ByteBuffer) {
-        // 소리 pts는 MONOTONIC이다. 영상 시계로 바꾼다. 영상 시계를 정하기 전의 소리는 버린다.
-        val boottime = videoClockIsBoottime ?: return
-        val pts = if (boottime) ptsUs + (SystemClock.elapsedRealtimeNanos() - System.nanoTime()) / 1000 else ptsUs
-        streamer?.onAudioFrame(pts, data)
+        // 소리 pts는 MONOTONIC이고 영상도 그 시계로 옮겨 보낸다 ([VideoClock]). 첫 영상보다 앞선 소리는 보내는 쪽이 버린다.
+        streamer?.onAudioFrame(ptsUs, data)
     }
 
-    override fun onAudioLevel(peak: Float) = Unit
+    override fun onAudioLevel(peak: Float) = AudioMeter.push(peak)
 
     override fun onAudioError(encoder: AudioEncoder, message: String) {
         synchronized(audioLock) {
             if (audio !== encoder) return
             audio = null
         }
+        AudioMeter.active = false
         Log.w(TAG, "mic stopped: $message")
         LiveState.update { it.copy(micError = message) }
     }
@@ -372,7 +451,11 @@ class LiveSession(
     // ------------------------------------------------------------------------------------------
     // 위젯 (채팅창, 후원 알림)
 
-    /** 메인 스레드에서. 방송에 넣기로 한 위젯만 얹고 나머지는 지운다. 그림은 복사해 넘긴다 (인코더가 맡아 해제한다). */
+    /**
+     * 메인 스레드에서. 방송에 넣기로 한 위젯만 얹고 나머지는 지운다.
+     * 그림은 복사하지 않고 그대로 넘긴다. [WidgetHost]는 뜰 때마다 새 그림을 만들고 넘긴 그림은 바꾸지도 해제하지도
+     * 않는다 (예전에는 그림마다 복사해 초당 수십 장, 장마다 수 MB씩 메모리를 새로 잡았다).
+     */
     private fun pushWidget(target: VideoEncoder?, index: Int, frame: WidgetHost.Frame?) {
         if (target == null) return
         val item = frame?.item
@@ -380,11 +463,14 @@ class LiveSession(
             target.setLayer(index, null, 0f, 0f, 0f, 0f, 0f)
             return
         }
-        val copy = frame.bitmap.copy(Bitmap.Config.ARGB_8888, false) ?: return
+        val bitmap = frame.bitmap
         val rect = WidgetCanvas.pixelRect(item)
         val w = WidgetCanvas.WIDTH.toFloat()
         val h = WidgetCanvas.HEIGHT.toFloat()
-        target.setLayer(index, copy, rect.left / w, rect.top / h, (rect.left + copy.width) / w, (rect.top + copy.height) / h, 1f)
+        target.setLayer(
+            index, bitmap, rect.left / w, rect.top / h, (rect.left + bitmap.width) / w, (rect.top + bitmap.height) / h, 1f,
+            owned = false,
+        )
     }
 
     // ------------------------------------------------------------------------------------------
@@ -409,28 +495,54 @@ class LiveSession(
     }
 
     // ------------------------------------------------------------------------------------------
-    // 1초마다: 발열·네트워크 대응, 끊김 감지, 화면 상태
+    // 1초마다: 발열·네트워크 대응, 끊김 감지, 화면 상태. 그 사이 0.125초마다: 대기열이 밀리기 시작했는지.
 
     private fun tickLoop() {
         try {
+            var count = 0
             while (!stopped) {
-                Thread.sleep(TICK_MS)
-                tick()
+                Thread.sleep(FAST_TICK_MS)
+                fastTick()
+                if (++count % (TICK_MS / FAST_TICK_MS).toInt() == 0) tick()
             }
         } catch (_: InterruptedException) {
         }
     }
 
+    /**
+     * 대기열이 밀리기 시작하면 (망이 갑자기 느려졌다) 1초 틱을 기다리지 않고 바로 망 속도에 맞는 비트레이트로 내린다.
+     * 1초를 기다리면 그사이에 쌓인 것만으로 한도를 넘어 건너뛰게 된다 ([UploadGovernor.onDelay]).
+     */
+    private fun fastTick() {
+        val active = streamer ?: return
+        val base = LiveHeat.bitrate(quality.bitrate, heat.level)
+        val link = active.linkBps(LINK_SPEED_AGE_MS)
+        val lowered = net.onDelay(active.queueDelayMs(), link, SystemClock.elapsedRealtime()) { LiveNet.totalBitrate(base, it) }
+        if (lowered) applyBitrate()
+    }
+
+    private fun applyBitrate() {
+        targetBitrate = LiveNet.limitBitrate(LiveHeat.bitrate(quality.bitrate, heat.level), net.level)
+        Log.i(TAG, "bitrate ${targetBitrate / 1000} kbps (heat ${heat.level}, net ${net.level})")
+        encoder?.setBitrate(targetBitrate)
+    }
+
     private fun tick() {
         val now = SystemClock.elapsedRealtime()
         val device = DeviceStatus.read(context)
-        var changed = heat.update(device.thermalStatus, device.temperatureC, now)
+        val heatChanged = heat.update(device.thermalStatus, device.temperatureC, now)
+        var changed = heatChanged
 
         val active = streamer
         var kbps = 0
+        var sendDelayMs = 0L
+        var skipped = false
         if (active != null) {
             val stats = active.takeStats()
+            sendDelayMs = stats.delayMs
+            skipped = stats.drops > 0
             changed = net.update(stats.drops, stats.fill, now) || changed
+            if (stats.skippedMs > 0) Log.i(TAG, "upload fell behind: skipped ${stats.skippedMs} ms")
             val sent = active.bytesSent
             val elapsed = if (lastTickMs > 0) now - lastTickMs else TICK_MS
             if (lastBytesSent > 0) kbps = ((sent - lastBytesSent) * 8 / elapsed.coerceAtLeast(1)).toInt()
@@ -442,25 +554,84 @@ class LiveSession(
         }
         lastTickMs = now
 
-        if (changed) {
-            targetBitrate = NetGovernor.limitBitrate(HeatGovernor.limitBitrate(quality.bitrate, heat.level), net.level)
-            Log.i(TAG, "bitrate ${targetBitrate / 1000} kbps (heat ${heat.level}, net ${net.level})")
-            encoder?.setBitrate(targetBitrate)
+        if (changed) applyBitrate()
+        if (active != null) {
+            // 소켓 버퍼는 지금 비트레이트에 맞춘다. 줄이는 것은 대기열이 비어 있거나 방금 건너뛰었을 때만.
+            val bytes = LiveNet.sendBuffer(sendBufferBytes, targetBitrate + LiveNet.AUDIO_BPS, sendDelayMs, skipped)
+            if (bytes != sendBufferBytes) {
+                sendBufferBytes = bytes
+                active.setSendBuffer(bytes)
+            }
+        }
+        if (cameraErrorUntilMs != 0L && now >= cameraErrorUntilMs) {
+            cameraErrorUntilMs = 0L
+            LiveState.update { it.copy(cameraError = null) }
+        }
+        if (heatChanged) {
+            val level = heat.level
+            val fps = LiveHeat.fps(quality.fps, level)
+            if (fps != encoderFps && encoder != null) {
+                // 연결은 유지하고 인코더만 새 프레임 수로 새로 만든다 (카메라 전환과 같은 길).
+                Log.i(TAG, "heat $level: ${encoderFps}fps -> ${fps}fps")
+                restartRequested = true
+            }
+            main.post { if (!ended) WidgetHost.slowdown = LiveHeat.widgetSlowdown(level) }
         }
         LiveState.update {
             it.copy(
                 sendKbps = kbps, targetKbps = targetBitrate / 1000, heatLevel = heat.level, netLevel = net.level,
+                sendDelayMs = sendDelayMs / 100 * 100, // 화면이 매 틱 바뀌지 않게 0.1초 단위로
                 droppedFrames = active?.droppedFrames ?: it.droppedFrames,
             )
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // 치지직에 방송이 떴는지, 시청자 수
+
+    private fun watchLoop() {
+        val transport = UrlConnectionTransport(timeoutMs = WATCH_TIMEOUT_MS)
+        try {
+            Thread.sleep(FIRST_WATCH_MS)
+            while (!stopped) {
+                val channelId = ChzzkPrefs.channelId(context)
+                if (channelId.isNotEmpty()) {
+                    val status = ChzzkLiveStatus.fetch(transport, channelId)
+                    // 방송이 끝난 뒤에 늦게 온 답은 버린다.
+                    if (!stopped) {
+                        LiveState.update {
+                            if (it.phase == LiveState.Phase.IDLE) {
+                                it
+                            } else {
+                                val viewers = status?.takeIf { s -> s.open }?.viewers ?: -1
+                                it.copy(chzzkOpen = status?.open, viewers = viewers, peakViewers = maxOf(it.peakViewers, viewers))
+                            }
+                        }
+                    }
+                }
+                Thread.sleep(WATCH_MS)
+            }
+        } catch (_: InterruptedException) {
         }
     }
 
     companion object {
         private const val TAG = "LiveSession"
 
-        private const val QUEUE_SECONDS = 2
+        /** 치지직은 송출을 받고 몇 초 뒤에 방송을 연다. 처음은 조금 기다렸다 읽는다. */
+        private const val FIRST_WATCH_MS = 6_000L
+        private const val WATCH_MS = 10_000L
+        private const val WATCH_TIMEOUT_MS = 8_000
+
+
+        /** 카메라를 바꾸지 못했다는 줄을 상태에 보이는 시간. */
+        private const val CAMERA_ERROR_SHOW_MS = 15_000L
         private const val RETRY_MS = 3_000L
         private const val TICK_MS = 1_000L
+        private const val FAST_TICK_MS = 125L
+
+        /** 잰 망 속도는 이만큼 지나면 쓰지 않는다. */
+        private const val LINK_SPEED_AGE_MS = 1_500L
         private const val STALL_MS = 10_000L
         private const val ENCODER_FAILURE_WINDOW_MS = 60_000L
         private const val MAX_ENCODER_FAILURES = 3

@@ -25,6 +25,25 @@ class BrowserSourcesTest {
     }
 
     @Test
+    fun textSourcesComeLastSoTheyAreDrawnOnTop() {
+        val roulette = OverlaySettings.DEFAULT_TEXT.copy(text = "룰렛 있음")
+        val notice = OverlaySettings.DEFAULT_TEXT.copy(text = "후원 감사")
+        val settings = OverlaySettings(sources = listOf(toonation), texts = listOf(roulette, notice))
+        val slots = BrowserSources.slots(settings)
+        assertEquals(WidgetHost.FIRST_SOURCE + BrowserSources.MAX, WidgetHost.FIRST_TEXT)
+        assertEquals(WidgetHost.FIRST_TEXT + TextSources.MAX, WidgetHost.COUNT)
+        assertSame(roulette, slots[WidgetHost.FIRST_TEXT])
+        assertSame(notice, slots[WidgetHost.FIRST_TEXT + 1])
+        assertNull(slots[WidgetHost.FIRST_TEXT + 2])
+        assertNull(slots[WidgetHost.FIRST_SOURCE + 1])
+
+        val moved = BrowserSources.update(settings, WidgetHost.FIRST_TEXT + 1) { it.copy(x = 0.6f, w = 0.3f) }
+        assertEquals(listOf(roulette, notice.copy(x = 0.6f, w = 0.3f)), moved.texts)
+        assertEquals(settings.sources, moved.sources)
+        assertSame(settings, BrowserSources.update(settings, WidgetHost.FIRST_TEXT + 2) { it.copy(x = 0f) })
+    }
+
+    @Test
     fun everySlotHasAnEncoderLayer() {
         assertTrue(WidgetHost.COUNT <= VideoEffects.MAX_LAYERS)
     }

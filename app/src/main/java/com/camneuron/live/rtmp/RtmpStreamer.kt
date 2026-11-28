@@ -12,11 +12,13 @@ import java.nio.ByteBuffer
 class RtmpStreamer(
     private val publisher: RtmpPublisher,
     queueBytes: Int,
+    /** 대기열에서 이보다 오래 기다리면 쌓인 영상·소리를 버리고 건너뛴다 ([MediaQueue]). 폰 안에서 방송이 밀리는 상한. */
+    maxDelayMs: Long,
     onNeedKeyFrame: () -> Unit,
     private val onFailed: (String) -> Unit,
     private val log: (String) -> Unit = {},
 ) {
-    private val queue = MediaQueue(queueBytes, onNeedKeyFrame)
+    private val queue = MediaQueue(queueBytes, maxDelayMs, onNeedKeyFrame = onNeedKeyFrame)
     private val thread = Thread(::sendLoop, "rtmp-sender")
 
     @Volatile
@@ -29,6 +31,9 @@ class RtmpStreamer(
     private var sps: ByteArray? = null
     private var pps: ByteArray? = null
     private var sequenceHeaderSent = false
+
+    /** 새 인코더의 첫 프레임을 기다리는 중. 키프레임이 올 때까지의 프레임은 버린다. */
+    private var awaitingKeyFrame = false
     private var lastVideoMs = 0L
 
     // 소리 스레드 전용
@@ -59,6 +64,15 @@ class RtmpStreamer(
 
     fun takeStats(): MediaQueue.Stats = queue.takeStats()
 
+    /** 지금 대기열 맨 앞이 기다린 시간 (ms). */
+    fun queueDelayMs(): Long = queue.currentDelayMs()
+
+    /** 방금([maxAgeMs] 안에) 잰 망의 업로드 속도 (bps). 쓰기가 막힌 적이 없으면 -1. [SendMeter] */
+    fun linkBps(maxAgeMs: Long): Int = publisher.linkBps(maxAgeMs)
+
+    /** 비트레이트를 바꿨을 때 소켓 송신 버퍼도 맞춘다 ([RtmpPublisher.setSendBuffer]). */
+    fun setSendBuffer(bytes: Int) = publisher.setSendBuffer(bytes)
+
     /** 쓰기 하나가 [limitMs]보다 오래 막혀 있으면 true (네트워크가 사실상 끊김). */
     fun isStalled(nowMs: Long, limitMs: Long): Boolean {
         val started = writeStartedMs
@@ -69,15 +83,23 @@ class RtmpStreamer(
         queue.offer(MediaQueue.Item(MediaQueue.Kind.ESSENTIAL, ChunkWriter.CSID_DATA, RtmpMessage.DATA_AMF0, 0, payload))
     }
 
-    /** 인코더의 설정 버퍼 (Annex-B SPS·PPS). 인코더를 새로 만들 때마다 다시 온다. */
+    /**
+     * 인코더의 설정 버퍼 (Annex-B SPS·PPS). 인코더를 새로 만들 때마다 (카메라 전환 등) 다시 온다.
+     * SPS·PPS가 전과 같으면 시퀀스 헤더를 다시 보내지 않는다: 서버와 플레이어에는 영상이 잠깐 비었다 키프레임으로
+     * 이어지는 것으로만 보인다. 달라졌을 때만 (프레임 수가 바뀐 경우 등) 새 헤더를 보낸다.
+     */
     fun onVideoConfig(annexB: ByteArray) {
         takeParameterSets(annexB)
-        sequenceHeaderSent = false
+        awaitingKeyFrame = true
     }
 
     fun onVideoFrame(ptsUs: Long, annexB: ByteArray, keyFrame: Boolean) {
         // 설정 버퍼 없이 키프레임 안에 SPS·PPS를 넣는 인코더도 있다.
-        if (keyFrame && (sps == null || pps == null || !sequenceHeaderSent)) takeParameterSets(annexB)
+        if (keyFrame && (sps == null || pps == null || !sequenceHeaderSent || awaitingKeyFrame)) takeParameterSets(annexB)
+        if (awaitingKeyFrame) {
+            if (!keyFrame) return
+            awaitingKeyFrame = false
+        }
         if (!sequenceHeaderSent) {
             if (!keyFrame) return // 시퀀스 헤더 뒤의 첫 프레임은 키프레임이어야 한다
             val s = sps ?: return
@@ -133,9 +155,11 @@ class RtmpStreamer(
     private fun sendLoop() {
         try {
             while (running) {
+                // 보낼 것이 없으면 망이 다 싣고 있는 것이다: 그 시간은 망 속도를 재는 데서 뺀다.
+                if (queue.queuedBytes() == 0) publisher.idle()
                 val item = queue.take(500) ?: continue
                 writeStartedMs = System.currentTimeMillis()
-                publisher.send(item.chunkStreamId, item.type, item.timestampMs, item.payload)
+                publisher.send(item.chunkStreamId, item.type, item.sendTimestampMs, item.payload)
                 writeStartedMs = 0L
             }
         } catch (e: IOException) {

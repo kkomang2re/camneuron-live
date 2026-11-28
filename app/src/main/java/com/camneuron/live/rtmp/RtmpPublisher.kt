@@ -23,6 +23,12 @@ class RtmpException(message: String, cause: Throwable? = null) : IOException(mes
 class RtmpPublisher(
     private val url: RtmpUrl,
     private val streamKey: String,
+    /**
+     * 소켓 송신 버퍼 크기 (0이면 시스템 기본, 보통은 [sendBufferFor]). 기본값은 LTE·5G에서 수 MB까지 자라, 업로드가 잠깐
+     * 느려지면 그만큼 (낮춘 비트레이트로는 10초 넘게) 영상이 폰 안에 쌓인다. 앱 대기열은 그것이 다 찬 뒤에야 밀린 줄 알게 된다.
+     * 작게 정해 두면 밀림이 앱 대기열로 바로 올라와 거기서 시간으로 끊는다. 방송 중에는 [setSendBuffer]로 바꾼다.
+     */
+    private val sendBufferBytes: Int = 0,
     private val log: (String) -> Unit = {},
 ) : Closeable {
     private val socket = Socket()
@@ -41,9 +47,48 @@ class RtmpPublisher(
     @Volatile
     private var closed = false
 
-    val bytesSent: Long get() = if (::writer.isInitialized) writer.bytesWritten else 0L
+    private val meter = SendMeter()
+
+    /**
+     * 소켓이 받아 준 바이트 수. 쓰기 하나([SOCKET_WRITE] 바이트 이하)가 끝날 때마다 늘어나므로, 망이 느려 쓰기가 막혀 있는
+     * 동안에는 실제로 나간 만큼만 늘어난다.
+     */
+    val bytesSent: Long get() = meter.count
+
+    /** 방금([maxAgeMs] 안에) 잰 망의 업로드 속도 (bps). 쓰기가 막힌 적이 없으면 (망이 넉넉하다) -1. [SendMeter] */
+    fun linkBps(maxAgeMs: Long): Int = meter.linkBps(System.nanoTime(), maxAgeMs * 1_000_000)
+
+    /** 보낼 것이 없어 쉬었다 ([SendMeter.idle]). [send]를 부르는 스레드에서. */
+    fun idle() = meter.idle()
+
+    /** 아래 스트림에 쓰는 것을 [meter]에 알린다. 큰 덩어리는 나눠 쓴다: 막혀 있는 동안에도 나간 만큼씩 세어지게. */
+    private inner class MeteredOutputStream(private val out: java.io.OutputStream) : java.io.OutputStream() {
+        override fun write(b: Int) {
+            val start = System.nanoTime()
+            out.write(b)
+            meter.onWrite(1, start, System.nanoTime())
+        }
+
+        override fun write(b: ByteArray, off: Int, len: Int) {
+            var done = 0
+            while (done < len) {
+                val n = minOf(len - done, SOCKET_WRITE)
+                val start = System.nanoTime()
+                out.write(b, off + done, n)
+                meter.onWrite(n, start, System.nanoTime())
+                done += n
+            }
+        }
+
+        override fun flush() = out.flush()
+    }
 
     fun connect(timeoutMs: Int = CONNECT_TIMEOUT_MS) {
+        if (sendBufferBytes > 0) {
+            // 연결 전에 정한다. 정하면 시스템이 버퍼를 스스로 키우지 않는다.
+            runCatching { socket.sendBufferSize = sendBufferBytes }
+                .onFailure { log("send buffer not set: ${it.message}") }
+        }
         try {
             socket.connect(InetSocketAddress(url.host, url.port), timeoutMs)
         } catch (e: IOException) {
@@ -53,7 +98,7 @@ class RtmpPublisher(
             socket.tcpNoDelay = true
             socket.soTimeout = timeoutMs
             val input = DataInputStream(socket.getInputStream().buffered())
-            val output = BufferedOutputStream(socket.getOutputStream(), OUTPUT_BUFFER)
+            val output = BufferedOutputStream(MeteredOutputStream(socket.getOutputStream()), OUTPUT_BUFFER)
             handshake(input, output)
             writer = ChunkWriter(output)
             reader = ChunkReader(input)
@@ -124,6 +169,16 @@ class RtmpPublisher(
             isDaemon = true
             start()
         }
+    }
+
+    /**
+     * 방송 중에 소켓 송신 버퍼 크기를 바꾼다. 비트레이트를 낮추면 같은 바이트가 더 긴 시간이 되므로 함께 줄인다
+     * ([sendBufferFor]). 아무 스레드에서나 불러도 된다. 줄이면 이미 쌓인 것이 빠질 때까지 다음 쓰기가 기다릴 뿐이다.
+     */
+    fun setSendBuffer(bytes: Int) {
+        if (bytes <= 0 || closed) return
+        runCatching { socket.sendBufferSize = bytes }.onFailure { log("send buffer not set: ${it.message}") }
+        meter.restart()
     }
 
     /** 미디어나 데이터 메시지 하나를 보낸다. 한 스레드에서만 부른다. 연결이 끊기면 IOException. */
@@ -268,7 +323,23 @@ class RtmpPublisher(
         private const val CONNECT_TIMEOUT_MS = 10_000
         private const val OUT_CHUNK_SIZE = 4096
         private const val OUTPUT_BUFFER = 64 * 1024
+
+        /** 소켓에 한 번에 쓰는 가장 큰 크기. */
+        private const val SOCKET_WRITE = 8 * 1024
         private const val FLASH_VER = "FMLE/3.0 (compatible; FMSc/1.0)"
         private const val GOODBYE_TIMEOUT_MS = 1000L
+
+        private const val MIN_SEND_BUFFER = 16 * 1024
+        private const val MAX_SEND_BUFFER = 128 * 1024
+
+        /**
+         * 지금 [bitrate](bps)로 보낼 때 요청할 소켓 송신 버퍼 크기: 0.125초 분량. 리눅스(Android)는 요청한 값의 두 배를
+         * 잡으므로(관리용 몫 포함) 실제로는 0.15~0.25초 분량이 들어간다.
+         *
+         * 버퍼에 든 것은 대기열이 모르는 밀림이다. 클수록 망이 느려진 것을 늦게 알아채고 (버퍼가 다 찬 뒤에야 대기열이
+         * 밀린다), 느려진 망에서는 그만큼이 몇 초가 된다 (0.5초 분량이면 1/3로 느려진 망에서 1.5초). 0.0.13까지는
+         * 0.25초 분량이었다. 이보다 작게 하면 왕복 지연이 큰 망(0.2초 이상)에서 버퍼 때문에 속도가 안 나온다.
+         */
+        fun sendBufferFor(bitrate: Int): Int = (bitrate / 8 / 8).coerceIn(MIN_SEND_BUFFER, MAX_SEND_BUFFER)
     }
 }

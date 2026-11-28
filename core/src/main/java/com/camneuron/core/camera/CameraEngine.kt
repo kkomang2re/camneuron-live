@@ -75,6 +75,9 @@ class CameraEngine private constructor(context: Context) {
     /** 카메라가 이전 미리보기에 더 이상 그리지 않게 된 뒤(다음 세션 재구성 뒤)에 할 정리. */
     private val pendingRelease = mutableListOf<() -> Unit>()
 
+    /** 전면/후면을 바꾸는 중이다. 새 카메라를 열 때 한 번 [CameraControls.switchedTo]를 적용한다. executor 스레드 전용. */
+    private var facingSwitched = false
+
     @Volatile
     var controls = CameraControls()
         private set
@@ -128,7 +131,7 @@ class CameraEngine private constructor(context: Context) {
         val future = executor.submit<Unit> {
             encoderSurface = surface
             encoderFormat = format
-            if (controls.front != front) setControls(controls.copy(front = front))
+            if (controls.front != front) switchFacing(front)
             val error = reconfigure()
             if (error != null) {
                 encoderSurface = null
@@ -177,13 +180,24 @@ class CameraEngine private constructor(context: Context) {
         }
         executor.execute {
             if (controls.front == front) return@execute
-            setControls(controls.copy(front = front))
+            switchFacing(front)
             reconfigureOrRetry()
         }
     }
 
-    /** 요청과 가장 가까우면서 카메라와 인코더([encoderSupports])가 모두 지원하는 형식을 고른다. */
-    fun resolveFormat(front: Boolean, width: Int, height: Int, fps: Int, encoderSupports: (Int, Int) -> Boolean): StreamFormat {
+    /**
+     * 요청과 가장 가까우면서 카메라와 인코더([encoderSupports])가 모두 지원하는 형식을 고른다.
+     * [keepSize]면 크기는 꼭 [width]x[height]여야 하고 (방송 중에 카메라를 바꿀 때: 크기가 바뀌면 시청자 플레이어가 멈춘다),
+     * 그 크기로 낼 수 있는 만큼만 fps를 낮춘다. 이 카메라가 그 크기를 내지 못하면 예외를 던진다.
+     */
+    fun resolveFormat(
+        front: Boolean,
+        width: Int,
+        height: Int,
+        fps: Int,
+        encoderSupports: (Int, Int) -> Boolean,
+        keepSize: Boolean = false,
+    ): StreamFormat {
         val id = cameraIdFor(front) ?: throw IOException("no camera")
         val chars = manager.getCameraCharacteristics(id)
         val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
@@ -191,6 +205,13 @@ class CameraEngine private constructor(context: Context) {
 
         val sizes = map.getOutputSizes(MediaCodec::class.java).filter { encoderSupports(it.width, it.height) }
         if (sizes.isEmpty()) throw IOException("no usable video size")
+        if (keepSize) {
+            val same = sizes.firstOrNull { it.width == width && it.height == height }
+                ?: throw IOException("이 카메라는 ${width}x$height 영상을 내지 못함")
+            // 전면 카메라는 같은 크기라도 60fps가 안 되는 경우가 많다.
+            val maxFps = maxFpsForFrameDuration(map.getOutputMinFrameDuration(MediaCodec::class.java, same), fps)
+            return StreamFormat(same.width, same.height, pickFpsRange(chars, minOf(fps, maxFps)).upper)
+        }
         // 요청한 fps를 낼 수 있는 크기를 우선한다.
         val fastEnough = sizes.filter {
             val minDuration = map.getOutputMinFrameDuration(MediaCodec::class.java, it)
@@ -206,6 +227,12 @@ class CameraEngine private constructor(context: Context) {
     private fun setControls(next: CameraControls) {
         controls = next
         listeners.forEach { it.onControlsChanged(next) }
+    }
+
+    /** 전면/후면을 바꾼다. 실제로 바뀌는 것은 다음 세션 재구성에서 새 카메라를 열 때다 ([openDevice]). */
+    private fun switchFacing(front: Boolean) {
+        facingSwitched = true
+        setControls(controls.copy(front = front))
     }
 
     /** 인코더를 붙이는 경우([attachEncoder])를 뺀 모든 세션 재구성. */
@@ -298,7 +325,12 @@ class CameraEngine private constructor(context: Context) {
         caps = newCaps
         // 다른 카메라로 바뀌면 화면 좌표가 달라지므로 탭 초점은 연속 자동으로 되돌린다.
         val focusMode = if (controls.focusMode == FocusMode.AUTO) FocusMode.CONTINUOUS else controls.focusMode
-        setControls(controls.copy(focusMode = focusMode, focusPoint = null).clampedTo(newCaps))
+        val base = controls.copy(focusMode = focusMode, focusPoint = null)
+        // 사람이 전면/후면을 바꿔서 연 것이면 그 카메라의 기본값으로 (후면: 줌 1×, 손떨림 보정 켬). 같은 카메라를 다시 연
+        // 것(앱으로 돌아옴, 오류 뒤 다시 열기)이면 맞춰 둔 값을 그대로 둔다.
+        val switched = facingSwitched
+        facingSwitched = false
+        setControls(if (switched) base.switchedTo(newCaps) else base.clampedTo(newCaps))
         listeners.forEach { it.onCapsChanged(newCaps) }
         Log.i(TAG, "opened camera $id: $newCaps")
     }
